@@ -7,6 +7,7 @@ from insightface.app import FaceAnalysis
 from typing import Optional, Dict, Any, List
 import sys
 import os
+from datetime import datetime
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -20,7 +21,7 @@ FACE_APP.prepare(ctx_id=-1)  # CPU
 print("[FacialRecognition] InsightFace Model Ready.")
 
 # Match threshold for face recognition
-MATCH_THRESHOLD = 0.45  # Cosine Similarity
+MATCH_THRESHOLD = 0.2  # Cosine Similarity
 
 
 class FacialRecognitionService:
@@ -44,6 +45,9 @@ class FacialRecognitionService:
         self.frame_history: List[Optional[str]] = []  # Last 10 frame results (person_id or None)
         self.current_person_id: Optional[str] = None
         self.history_size = 10
+        
+        # Embedding averaging: person_id -> (averaged_embedding, count)
+        self.embedding_averages: Dict[str, tuple[np.ndarray, int]] = {}
     
     def get_embedding_from_image_data(self, image_data: bytes) -> Optional[np.ndarray]:
         """Extract face embedding from image bytes.
@@ -165,6 +169,20 @@ class FacialRecognitionService:
         # Check if match is above threshold
         if best_match_id and best_score >= MATCH_THRESHOLD:
             print(f"[FacialRecognition] ✅ Match found: {best_match_id} (score: {best_score:.4f})")
+            
+            # Update running average for this person
+            if best_match_id in self.embedding_averages:
+                avg_embedding, count = self.embedding_averages[best_match_id]
+                # Weighted average: new_avg = (old_avg * count + new_embedding) / (count + 1)
+                new_count = count + 1
+                new_avg = (avg_embedding * count + embedding) / new_count
+                self.embedding_averages[best_match_id] = (new_avg, new_count)
+                print(f"[FacialRecognition] 📈 Updated average for {best_match_id} (count: {new_count})")
+            else:
+                # First time seeing this person in this session, initialize with current embedding
+                self.embedding_averages[best_match_id] = (embedding.copy(), 1)
+                print(f"[FacialRecognition] 📈 Initialized average for {best_match_id} (count: 1)")
+            
             return best_match_id
         
         # No match found - create new person entry
@@ -173,6 +191,29 @@ class FacialRecognitionService:
             new_person_id = f"Unnamed_{uuid.uuid4().hex[:8]}"
             
             print(f"[FacialRecognition] 🆕 No match found (best_score: {best_score:.4f}), creating new person: {new_person_id}")
+            
+            # Save image to tmp directory
+            try:
+                # Decode image from bytes again to save
+                nparr = np.frombuffer(image_data, np.uint8)
+                img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                
+                if img is not None:
+                    # Create tmp directory in back_end
+                    back_end_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                    tmp_dir = os.path.join(back_end_dir, "tmp")
+                    os.makedirs(tmp_dir, exist_ok=True)
+                    
+                    # Create filename with timestamp and person_id
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+                    filename = f"{new_person_id}_{timestamp}.jpg"
+                    filepath = os.path.join(tmp_dir, filename)
+                    
+                    # Save image
+                    cv2.imwrite(filepath, img)
+                    print(f"[FacialRecognition] 📸 Saved new person image to: {filepath}")
+            except Exception as e:
+                print(f"[FacialRecognition] ⚠️  Error saving image: {e}")
             
             # Save to database
             if self.database_manager:
@@ -187,6 +228,9 @@ class FacialRecognitionService:
                         count=1
                     )
                     print(f"[FacialRecognition] 💾 Saved new person to database: {new_person_id}")
+                    
+                    # Initialize average for this new person
+                    self.embedding_averages[new_person_id] = (embedding.copy(), 1)
                 except Exception as e:
                     print(f"[FacialRecognition] ❌ Error saving new person to database: {e}")
                     import traceback
@@ -266,6 +310,8 @@ class FacialRecognitionService:
         # Case 1: Switch from person to no person (9/10 instances)
         if self.current_person_id is not None and person_id is None:
             if self.should_switch_to_no_person():
+                # Save averaged embedding to database before switching away
+                self._save_averaged_embedding(self.current_person_id)
                 print(f"[FacialRecognition] Person switch detected: {self.current_person_id} -> None (no person)")
                 self.current_person_id = None
                 return (None, True)  # Switch to no person detected
@@ -274,6 +320,9 @@ class FacialRecognitionService:
         elif person_id is not None:
             if self.current_person_id != person_id:
                 if self.should_switch_to_different_person(person_id):
+                    # Save averaged embedding for previous person before switching
+                    if self.current_person_id is not None:
+                        self._save_averaged_embedding(self.current_person_id)
                     print(f"[FacialRecognition] Person switch detected: {self.current_person_id} -> {person_id}")
                     self.current_person_id = person_id
                     return (person_id, True)  # Switch to person detected
@@ -286,4 +335,33 @@ class FacialRecognitionService:
         
         # No switch detected
         return (self.current_person_id, False)
+    
+    def _save_averaged_embedding(self, person_id: str) -> None:
+        """Save the averaged embedding for a person to the database.
+        
+        Args:
+            person_id: Person ID to save averaged embedding for
+        """
+        if person_id not in self.embedding_averages:
+            print(f"[FacialRecognition] ⚠️  No averaged embedding found for {person_id}, skipping save")
+            return
+        
+        avg_embedding, count = self.embedding_averages[person_id]
+        
+        if self.database_manager:
+            try:
+                # Convert averaged embedding to bytes
+                embedding_bytes = avg_embedding.tobytes()
+                
+                # Update face record in database with averaged embedding
+                self.database_manager.create_or_update_face(
+                    person_id=person_id,
+                    embedding=embedding_bytes,
+                    count=count
+                )
+                print(f"[FacialRecognition] 💾 Saved averaged embedding for {person_id} (count: {count})")
+            except Exception as e:
+                print(f"[FacialRecognition] ❌ Error saving averaged embedding for {person_id}: {e}")
+                import traceback
+                traceback.print_exc()
 

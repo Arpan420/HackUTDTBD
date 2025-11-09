@@ -78,6 +78,10 @@ class WebSocketServer:
         # Facial recognition service
         self.facial_recognition_service: Optional[FacialRecognitionService] = None
         
+        # Queue for person switch notifications from background thread
+        self.person_switch_queue: Optional[asyncio.Queue] = None
+        self.main_event_loop: Optional[asyncio.AbstractEventLoop] = None
+        
     def setup_esp32_connection(self) -> bool:
         """Set up ESP32 connection (BLE, WiFi, stream).
         
@@ -270,6 +274,9 @@ class WebSocketServer:
     def _notify_all_clients_person_switch(self, person_id: Optional[str], person_name: Optional[str], recap: Optional[str]):
         """Notify all connected WebSocket clients about person switch.
         
+        This method can be called from a background thread. It uses a queue to pass
+        the notification to the main event loop.
+        
         Args:
             person_id: Person ID (None for no person)
             person_name: Person name
@@ -280,26 +287,18 @@ class WebSocketServer:
         else:
             print(f"[WebSocket] 🔄 Person switch notification: No person")
         
-        # Send to all connected clients using asyncio
-        # We need to schedule this in the event loop
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # Schedule coroutines for all clients
-                for connection_id, conn_info in list(self.connections.items()):
-                    websocket = conn_info.get("websocket")
-                    if websocket:
-                        asyncio.create_task(self._send_person_switch(websocket, person_id, person_name, recap))
-            else:
-                # Run in the loop
-                async def notify_all():
-                    for connection_id, conn_info in list(self.connections.items()):
-                        websocket = conn_info.get("websocket")
-                        if websocket:
-                            await self._send_person_switch(websocket, person_id, person_name, recap)
-                loop.run_until_complete(notify_all())
-        except Exception as e:
-            print(f"[WebSocket] Error notifying clients: {e}")
+        # Use queue to pass message to main event loop (thread-safe)
+        if self.person_switch_queue and self.main_event_loop:
+            try:
+                # Put notification in queue (non-blocking, thread-safe)
+                self.main_event_loop.call_soon_threadsafe(
+                    self.person_switch_queue.put_nowait,
+                    (person_id, person_name, recap)
+                )
+            except Exception as e:
+                print(f"[WebSocket] Error queuing person switch notification: {e}")
+        else:
+            print(f"[WebSocket] Warning: Person switch queue not initialized, notification dropped")
     
     def start_esp32_processing(self):
         """Start ESP32 frame processing in background thread."""
@@ -581,6 +580,32 @@ class WebSocketServer:
         """Start the WebSocket server."""
         print(f"[WebSocket] Starting server on ws://{self.host}:{self.port}")
         
+        # Store main event loop and create queue for person switch notifications
+        self.main_event_loop = asyncio.get_event_loop()
+        self.person_switch_queue = asyncio.Queue()
+        
+        # Background task to process person switch notifications from ESP32 thread
+        async def process_person_switch_queue():
+            while True:
+                try:
+                    person_id, person_name, recap = await self.person_switch_queue.get()
+                    # Send to all connected clients
+                    for connection_id, conn_info in list(self.connections.items()):
+                        websocket = conn_info.get("websocket")
+                        if websocket:
+                            try:
+                                await self._send_person_switch(websocket, person_id, person_name, recap)
+                            except Exception as e:
+                                print(f"[WebSocket] Error sending person switch to {connection_id}: {e}")
+                    self.person_switch_queue.task_done()
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    print(f"[WebSocket] Error processing person switch queue: {e}")
+        
+        # Start background task
+        person_switch_task = asyncio.create_task(process_person_switch_queue())
+        
         # Set up ESP32 connection before starting server
         print("[WebSocket] Attempting to set up ESP32 connection...")
         try:
@@ -597,7 +622,15 @@ class WebSocketServer:
             print("[WebSocket] Continuing without ESP32 connection...")
         
         async with serve(self.handle_connection, self.host, self.port):
-            await asyncio.Future()  # Run forever
+            try:
+                await asyncio.Future()  # Run forever
+            finally:
+                # Cancel background task on shutdown
+                person_switch_task.cancel()
+                try:
+                    await person_switch_task
+                except asyncio.CancelledError:
+                    pass
     
     def run(self):
         """Run the WebSocket server (blocking)."""
