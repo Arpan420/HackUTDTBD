@@ -112,6 +112,45 @@ Return only valid JSON, no additional text."""
                 "tool_call_count": len(conversation_state.tool_calls)
             }
     
+    def generate_and_save_summary(
+        self,
+        conversation_state: ConversationState,
+        person_id: str
+    ) -> Optional[str]:
+        """Generate summary and save it to the summaries table.
+        
+        Args:
+            conversation_state: Conversation state to summarize
+            person_id: Person ID to associate with the summary
+            
+        Returns:
+            Summary text if successful, None otherwise
+        """
+        if not self.database_manager:
+            print("Warning: Database manager not available, cannot save summary")
+            return None
+        
+        try:
+            # Generate summary
+            summary_dict = self.generate_summary(conversation_state)
+            
+            # Extract summary text (use the "summary" field from the dict)
+            summary_text = summary_dict.get("summary", "")
+            if not summary_text:
+                # Fallback: create a text representation of the summary
+                summary_text = json.dumps(summary_dict, indent=2)
+            
+            # Save to database
+            self.database_manager.add_summary(person_id, summary_text)
+            
+            print(f"[Summarizer] Saved summary for person {person_id}")
+            return summary_text
+        except Exception as e:
+            print(f"Warning: Failed to generate and save summary: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
     def _build_conversation_text(self, conversation_state: ConversationState) -> str:
         """Build text representation of conversation.
         

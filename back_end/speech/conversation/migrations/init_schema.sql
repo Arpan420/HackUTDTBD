@@ -45,3 +45,26 @@ $$ language 'plpgsql';
 CREATE TRIGGER update_person_memories_updated_at BEFORE UPDATE ON person_memories
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+-- Table 3: faces
+-- Stores face recognition data and person information
+CREATE TABLE IF NOT EXISTS faces (
+    person_id VARCHAR(255) PRIMARY KEY,
+    embedding BYTEA,
+    count INTEGER DEFAULT 0,
+    socials JSONB,
+    recap TEXT
+);
+
+-- Table 4: summaries
+-- Stores conversation summaries for each person
+CREATE TABLE IF NOT EXISTS summaries (
+    summary_id SERIAL PRIMARY KEY,
+    person_id VARCHAR(255) NOT NULL,
+    summary_text TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Indexes for efficient queries
+CREATE INDEX IF NOT EXISTS idx_summaries_person_id ON summaries(person_id);
+CREATE INDEX IF NOT EXISTS idx_summaries_created_at ON summaries(created_at);
+

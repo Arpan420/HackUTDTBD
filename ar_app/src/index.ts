@@ -1,11 +1,25 @@
-import { ToolCall, AppServer, AppSession } from '@mentra/sdk';
-import path from 'path';
-import { setupExpressRoutes } from './webview';
-import { handleToolCall } from './tools';
+import { ToolCall, AppServer, AppSession, StreamType } from "@mentra/sdk";
+import path from "path";
+import { setupExpressRoutes } from "./webview";
+import { handleToolCall } from "./tools";
+import {
+  BackendWebSocketClient,
+  NotificationMessage,
+  PersonSwitchMessage,
+} from "./websocket";
 
-const PACKAGE_NAME = process.env.PACKAGE_NAME ?? (() => { throw new Error('PACKAGE_NAME is not set in .env file'); })();
-const MENTRAOS_API_KEY = process.env.MENTRAOS_API_KEY ?? (() => { throw new Error('MENTRAOS_API_KEY is not set in .env file'); })();
-const PORT = parseInt(process.env.PORT || '3000');
+const PACKAGE_NAME =
+  process.env.PACKAGE_NAME ??
+  (() => {
+    throw new Error("PACKAGE_NAME is not set in .env file");
+  })();
+const MENTRAOS_API_KEY =
+  process.env.MENTRAOS_API_KEY ??
+  (() => {
+    throw new Error("MENTRAOS_API_KEY is not set in .env file");
+  })();
+const PORT = parseInt(process.env.PORT || "3000");
+const BACKEND_WS_URL = process.env.BACKEND_WS_URL || "ws://localhost:8765";
 
 class ExampleMentraOSApp extends AppServer {
   constructor() {
@@ -13,7 +27,7 @@ class ExampleMentraOSApp extends AppServer {
       packageName: PACKAGE_NAME,
       apiKey: MENTRAOS_API_KEY,
       port: PORT,
-      publicDir: path.join(__dirname, '../public'),
+      publicDir: path.join(__dirname, "../public"),
     });
 
     // Set up Express routes
@@ -29,7 +43,11 @@ class ExampleMentraOSApp extends AppServer {
    * @returns Promise resolving to the tool call response or undefined
    */
   protected async onToolCall(toolCall: ToolCall): Promise<string | undefined> {
-    return handleToolCall(toolCall, toolCall.userId, this.userSessionsMap.get(toolCall.userId));
+    return handleToolCall(
+      toolCall,
+      toolCall.userId,
+      this.userSessionsMap.get(toolCall.userId)
+    );
   }
 
   /**
@@ -39,47 +57,128 @@ class ExampleMentraOSApp extends AppServer {
    * @param sessionId - Unique session identifier
    * @param userId - User identifier
    */
-  protected async onSession(session: AppSession, sessionId: string, userId: string): Promise<void> {
+  protected async onSession(
+    session: AppSession,
+    sessionId: string,
+    userId: string
+  ): Promise<void> {
     this.userSessionsMap.set(userId, session);
 
-    // Show welcome message
-    session.layouts.showTextWall("Example App loaded!");
+    // Initialize WebSocket client for this session
+    const wsClient = new BackendWebSocketClient(BACKEND_WS_URL);
+
+    // Display state
+    let currentPersonName: string = "Unknown";
+    let currentPersonBlurb: string = "No interaction";
+    const notifications: Array<{
+      title: string;
+      message: string;
+      timestamp: number;
+    }> = [];
+    const MAX_NOTIFICATIONS = 3;
+    const NOTIFICATION_DISPLAY_TIME = 5000; // 5 seconds
 
     /**
-     * Handles transcription display based on settings
-     * @param text - The transcription text to display
+     * Update the display with current person info and notifications
      */
-    const displayTranscription = (text: string): void => {
-      const showLiveTranscription = session.settings.get<boolean>('show_live_transcription', true);
-      if (showLiveTranscription) {
-        console.log("Transcript received:", text);
-        session.layouts.showTextWall("You said: " + text);
+    const updateDisplay = (): void => {
+      const lines: string[] = [];
+
+      // Line 1: Person name
+      lines.push(currentPersonName);
+
+      // Line 2: Person blurb
+      lines.push(currentPersonBlurb);
+
+      // Lines 3+: Recent notifications
+      const recentNotifications = notifications.slice(0, MAX_NOTIFICATIONS);
+      if (recentNotifications.length > 0) {
+        lines.push(""); // Empty line separator
+        recentNotifications.forEach((notif) => {
+          lines.push(`${notif.title}: ${notif.message}`);
+        });
       }
+
+      session.layouts.showTextWall(lines.join("\n"));
     };
 
-    // Listen for transcriptions
-    session.events.onTranscription((data) => {
-      if (data.isFinal) {
-        // Handle final transcription text
-        displayTranscription(data.text);
+    /**
+     * Add a notification and update display
+     */
+    const addNotification = (title: string, message: string): void => {
+      notifications.unshift({
+        title,
+        message,
+        timestamp: Date.now(),
+      });
+
+      // Keep only recent notifications
+      if (notifications.length > MAX_NOTIFICATIONS) {
+        notifications.pop();
+      }
+
+      updateDisplay();
+
+      // Auto-remove notification after display time
+      setTimeout(() => {
+        const index = notifications.findIndex(
+          (n) => n.title === title && n.message === message
+        );
+        if (index !== -1) {
+          notifications.splice(index, 1);
+          updateDisplay();
+        }
+      }, NOTIFICATION_DISPLAY_TIME);
+    };
+
+    // Set up WebSocket message handlers
+    wsClient.onMessage((message) => {
+      if (message.type === "notification") {
+        const notifMsg = message as NotificationMessage;
+        console.log(`[Notification] ${notifMsg.title}: ${notifMsg.message}`);
+        addNotification(notifMsg.title, notifMsg.message);
+      } else if (message.type === "switch_interaction_person") {
+        const personMsg = message as PersonSwitchMessage;
+        console.log(
+          `[Person Switch] ${personMsg.person_name} (${personMsg.person_id})`
+        );
+        currentPersonName = personMsg.person_name;
+        currentPersonBlurb = personMsg.blurb;
+        updateDisplay();
       }
     });
 
-    // Listen for setting changes to update transcription display behavior
-    session.settings.onValueChange(
-      'show_live_transcription',
-      (newValue: boolean, oldValue: boolean) => {
-        console.log(`Live transcription setting changed from ${oldValue} to ${newValue}`);
-        if (newValue) {
-          console.log("Live transcription display enabled");
-        } else {
-          console.log("Live transcription display disabled");
-        }
-      }
-    );
+    // Connect WebSocket
+    wsClient.connect();
 
-    // automatically remove the session when the session ends
-    this.addCleanupHandler(() => this.userSessionsMap.delete(userId));
+    // Subscribe to audio chunks (async subscription)
+    await session.subscribe(StreamType.AUDIO_CHUNK);
+
+    // Listen for audio chunks
+    session.events.onAudioChunk((data) => {
+      // AudioChunk interface: { type: StreamType.AUDIO_CHUNK, arrayBuffer: ArrayBufferLike, sampleRate?: number }
+      if (data.arrayBuffer) {
+        // Forward audio chunk to backend via WebSocket
+        // The arrayBuffer is ArrayBufferLike (can be ArrayBuffer, SharedArrayBuffer, etc.)
+        wsClient.sendAudioChunk(data.arrayBuffer);
+
+        // Optional: log sample rate if available
+        if (data.sampleRate) {
+          console.log(`[AudioChunk] Sample rate: ${data.sampleRate}Hz`);
+        }
+      } else {
+        console.warn("[AudioChunk] Received audio chunk without arrayBuffer");
+      }
+    });
+
+    // Show initial display
+    updateDisplay();
+
+    // Cleanup: disconnect WebSocket and remove session
+    this.addCleanupHandler(() => {
+      wsClient.disconnect();
+      this.userSessionsMap.delete(userId);
+    });
   }
 }
 

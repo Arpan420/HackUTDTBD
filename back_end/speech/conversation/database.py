@@ -302,6 +302,213 @@ class DatabaseManager:
         finally:
             self._return_connection(conn)
     
+    def get_person_name(self, person_id: Optional[str]) -> Optional[str]:
+        """Get person name from database.
+        
+        For now, this attempts to extract a name from person_memories.
+        If no person_id is provided or no name is found, returns None.
+        In the future, this could query a dedicated persons table.
+        
+        Args:
+            person_id: Person identifier
+            
+        Returns:
+            Person name if found, None otherwise
+        """
+        if not person_id:
+            return None
+        
+        conn = self._get_connection()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                # Try to find a name in memories (look for memory_text that might contain a name)
+                # For now, we'll use a simple heuristic: if person_id looks like a name, use it
+                # Otherwise, try to find a memory that might contain the name
+                cur.execute(
+                    """
+                    SELECT person_id, memory_text, created_at
+                    FROM person_memories
+                    WHERE person_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    (person_id,)
+                )
+                row = cur.fetchone()
+                
+                if row:
+                    # For now, use person_id as name if it looks like a name (not a UUID)
+                    # In production, this would query a persons table
+                    if len(person_id) < 50 and not person_id.startswith(('{', '[')):
+                        return person_id
+                
+                # Mock fallback: if person_id exists but no name found, return a mock name
+                # This is a placeholder until proper person management is implemented
+                return f"Person {person_id[:8]}"
+        except Exception as e:
+            # If database query fails, return mock name
+            print(f"Warning: Failed to get person name: {e}")
+            if person_id and len(person_id) < 50:
+                return person_id
+            return f"Person {person_id[:8] if person_id else 'Unknown'}"
+        finally:
+            self._return_connection(conn)
+    
+    # Face operations
+    def get_face_by_person_id(self, person_id: str) -> Optional[Dict[str, Any]]:
+        """Get face record for a specific person.
+        
+        Args:
+            person_id: Person identifier
+            
+        Returns:
+            Face dictionary or None if not found
+        """
+        conn = self._get_connection()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT person_id, embedding, count, socials, recap
+                    FROM faces
+                    WHERE person_id = %s
+                    """,
+                    (person_id,)
+                )
+                row = cur.fetchone()
+                return dict(row) if row else None
+        except Exception as e:
+            raise RuntimeError(f"Failed to get face: {e}")
+        finally:
+            self._return_connection(conn)
+    
+    def create_or_update_face(
+        self,
+        person_id: str,
+        embedding: Optional[bytes] = None,
+        count: Optional[int] = None,
+        socials: Optional[Dict[str, Any]] = None,
+        recap: Optional[str] = None
+    ) -> None:
+        """Create or update face record.
+        
+        Args:
+            person_id: Person identifier
+            embedding: Face embedding bytes (optional)
+            count: Detection count (optional)
+            socials: Social information as JSON dict (optional)
+            recap: Recap text (optional)
+        """
+        conn = self._get_connection()
+        try:
+            with conn.cursor() as cur:
+                # Use PostgreSQL JSONB for socials
+                import json as json_lib
+                socials_json = json_lib.dumps(socials) if socials else None
+                
+                cur.execute(
+                    """
+                    INSERT INTO faces (person_id, embedding, count, socials, recap)
+                    VALUES (%s, %s, %s, %s::jsonb, %s)
+                    ON CONFLICT (person_id) DO UPDATE SET
+                        embedding = COALESCE(EXCLUDED.embedding, faces.embedding),
+                        count = COALESCE(EXCLUDED.count, faces.count),
+                        socials = COALESCE(EXCLUDED.socials, faces.socials),
+                        recap = COALESCE(EXCLUDED.recap, faces.recap)
+                    """,
+                    (person_id, embedding, count, socials_json, recap)
+                )
+                conn.commit()
+        except Exception as e:
+            conn.rollback()
+            raise RuntimeError(f"Failed to create or update face: {e}")
+        finally:
+            self._return_connection(conn)
+    
+    def person_exists(self, person_id: str) -> bool:
+        """Check if person exists in faces table.
+        
+        Args:
+            person_id: Person identifier
+            
+        Returns:
+            True if person exists, False otherwise
+        """
+        conn = self._get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT 1 FROM faces WHERE person_id = %s
+                    """,
+                    (person_id,)
+                )
+                return cur.fetchone() is not None
+        except Exception as e:
+            raise RuntimeError(f"Failed to check if person exists: {e}")
+        finally:
+            self._return_connection(conn)
+    
+    # Summary operations
+    def add_summary(self, person_id: str, summary_text: str) -> int:
+        """Add a summary to the database.
+        
+        Args:
+            person_id: Person identifier
+            summary_text: Summary text content
+            
+        Returns:
+            ID of the created summary
+        """
+        conn = self._get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO summaries (person_id, summary_text)
+                    VALUES (%s, %s)
+                    RETURNING summary_id
+                    """,
+                    (person_id, summary_text)
+                )
+                summary_id = cur.fetchone()[0]
+                conn.commit()
+                return summary_id
+        except Exception as e:
+            conn.rollback()
+            raise RuntimeError(f"Failed to add summary: {e}")
+        finally:
+            self._return_connection(conn)
+    
+    def get_latest_summary(self, person_id: str) -> Optional[str]:
+        """Get the most recent summary for a person.
+        
+        Args:
+            person_id: Person identifier
+            
+        Returns:
+            Latest summary text or None if not found
+        """
+        conn = self._get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT summary_text
+                    FROM summaries
+                    WHERE person_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    (person_id,)
+                )
+                row = cur.fetchone()
+                return row[0] if row else None
+        except Exception as e:
+            raise RuntimeError(f"Failed to get latest summary: {e}")
+        finally:
+            self._return_connection(conn)
+    
     def close(self) -> None:
         """Close all database connections."""
         if self.connection_pool:
