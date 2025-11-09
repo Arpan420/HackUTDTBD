@@ -201,12 +201,8 @@ class ConversationOrchestrator:
         """
         previous_person_id = self._previous_person_id
         
-        # If switching to "nobody", do nothing
-        if person_id is None:
-            self._previous_person_id = None
-            return
-        
         # If previous person had messages, summarize their conversation in background thread
+        # This should happen even when switching to "nobody" (person_id is None)
         if previous_person_id and self.database_manager:
             try:
                 # Filter messages for the previous person
@@ -257,8 +253,12 @@ class ConversationOrchestrator:
                 import traceback
                 traceback.print_exc()
         
-        # Update previous person ID
+        # Update previous person ID (even if switching to None/nobody)
         self._previous_person_id = person_id
+        
+        # If switching to "nobody", we're done after generating summary for previous person
+        if person_id is None:
+            return
         
         # Check if person exists in database
         person_exists = False
