@@ -10,6 +10,7 @@ type Props = PropsWithChildren<{
 export const Modal: FC<Props> = ({ title, open, onClose, children }) => {
   if (!open) return null;
   return (
+    <div className="absolute inset-0 bg-transparent pointer-events-none">
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
       <div className="relative w-full sm:max-w-md bg-white dark:bg-neutral-900 rounded-t-2xl sm:rounded-2xl border border-neutral-200 dark:border-neutral-800 p-4">
@@ -22,5 +23,6 @@ export const Modal: FC<Props> = ({ title, open, onClose, children }) => {
         <div className="space-y-3">{children}</div>
       </div>
     </div>
+  </div>
   );
 };

@@ -25,12 +25,10 @@ export const Button: FC<Props> = ({
   ...rest
 }) => {
   const base =
-    "px-3 py-2 rounded-lg text-sm border transition " +
-    "outline-none select-none " +
-    "focus-visible:ring-2 focus-visible:ring-offset-1 " +
-    "focus-visible:ring-blue-600 focus-visible:ring-offset-white " +
-    "dark:focus-visible:ring-offset-neutral-900 " +
-    "active:scale-[0.98]";
+  "px-3 py-2 rounded-lg text-sm border transition " +
+  "outline-none select-none " +
+  "focus-visible:ring-2 focus-visible:ring-offset-1 " +
+  "focus-visible:ring-blue-600 focus-visible:ring-offset-white dark:focus-visible:ring-offset-neutral-950";
 
   const look = {
     primary:
