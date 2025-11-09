@@ -536,22 +536,39 @@ class WebSocketServer:
             person_name = data.get("person_name")
             new_name = data.get("new_name")
             
-            if not person_name or not new_name:
+            if not new_name:
                 await websocket.send(json.dumps({
                     "type": "error",
-                    "message": "Missing person_name or new_name parameter"
+                    "message": "Missing new_name parameter"
                 }))
                 return
             
             try:
                 if orchestrator.database_manager:
-                    orchestrator.database_manager.update_person_name_by_name(person_name, new_name)
-                    await websocket.send(json.dumps({
-                        "type": "change_name_response",
-                        "success": True,
-                        "message": f"Updated name from '{person_name}' to '{new_name}'"
-                    }))
-                    print(f"[WebSocket] Updated person name from '{person_name}' to '{new_name}'")
+                    # Prefer using person_id from orchestrator if available (more reliable)
+                    person_id = orchestrator.conversation_state.current_person_id
+                    if person_id:
+                        orchestrator.database_manager.update_person_name(person_id, new_name)
+                        await websocket.send(json.dumps({
+                            "type": "change_name_response",
+                            "success": True,
+                            "message": f"Updated name to '{new_name}'"
+                        }))
+                        print(f"[WebSocket] Updated person name to '{new_name}' for person_id {person_id}")
+                    elif person_name:
+                        # Fallback to person_name matching if person_id not available
+                        orchestrator.database_manager.update_person_name_by_name(person_name, new_name)
+                        await websocket.send(json.dumps({
+                            "type": "change_name_response",
+                            "success": True,
+                            "message": f"Updated name from '{person_name}' to '{new_name}'"
+                        }))
+                        print(f"[WebSocket] Updated person name from '{person_name}' to '{new_name}'")
+                    else:
+                        await websocket.send(json.dumps({
+                            "type": "error",
+                            "message": "No person_id or person_name provided"
+                        }))
                 else:
                     await websocket.send(json.dumps({
                         "type": "error",

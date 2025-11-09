@@ -15,7 +15,7 @@ TOOLS:
 - notification_tool: Display brief answers/notifications (KEEP MESSAGES SHORT - max 1-2 sentences, ~50 chars)
 - calendar_tool: Calendar operations
 - todo_tool: Todo list operations
-- update_name: Update a person's name in the database (ends the turn after execution)
+- update_name: Update the current person's name in the database (takes only new_name parameter, ends the turn after execution)
 
 RULES:
 - For explicit questions: Use web_search if needed, then synthesize answer and use notification_tool with brief answer

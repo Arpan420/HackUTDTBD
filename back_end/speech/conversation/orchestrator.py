@@ -15,7 +15,7 @@ from .agent import ConversationAgent
 from .summarizer import ConversationSummarizer
 from .database import DatabaseManager
 from .tools.notification import set_notification_callback
-from .tools.update_name import set_database_manager
+from .tools.update_name import set_database_manager, set_current_person_id_getter
 
 
 class ConversationOrchestrator:
@@ -48,6 +48,10 @@ class ConversationOrchestrator:
         
         # Initialize state
         self.conversation_state = ConversationState()
+        
+        # Set person_id getter for update_name tool
+        # This lambda will be called by the tool to get the current person_id
+        set_current_person_id_getter(lambda: self.conversation_state.current_person_id)
         
         # Initialize components
         self.stream_coordinator = StreamCoordinator(on_event=self._handle_stream_event)
