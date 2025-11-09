@@ -274,9 +274,9 @@ class ConversationOrchestrator:
                 if not person_name:
                     person_name = person_id  # Fallback to person_id as name
                 
-                # If person exists, get their recap
+                # If person exists, generate recap from all summaries
                 if person_exists:
-                    recap = self.database_manager.get_latest_summary(person_id)
+                    recap = self.summarizer.generate_recap_from_summaries(person_id)
             except Exception as e:
                 print(f"Warning: Failed to check person existence: {e}")
         

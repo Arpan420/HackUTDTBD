@@ -567,6 +567,38 @@ class DatabaseManager:
         finally:
             self._return_connection(conn)
     
+    def get_all_summaries(self, person_id: str) -> List[str]:
+        """Get all summaries for a person, sorted from most recent to oldest.
+        
+        Args:
+            person_id: Person identifier
+            
+        Returns:
+            List of summary texts, most recent first
+        """
+        print(f"[Database] Summary fetch request: Fetching all summaries for person {person_id}")
+        conn = self._get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT summary_text
+                    FROM summaries
+                    WHERE person_id = %s
+                    ORDER BY created_at DESC
+                    """,
+                    (person_id,)
+                )
+                rows = cur.fetchall()
+                summaries = [row[0] for row in rows]
+                print(f"[Database] Summary fetched: Found {len(summaries)} summaries for person {person_id}")
+                return summaries
+        except Exception as e:
+            print(f"[Database] Summary fetch request: Failed to fetch summaries for person {person_id}: {e}")
+            raise RuntimeError(f"Failed to get all summaries: {e}")
+        finally:
+            self._return_connection(conn)
+    
     def close(self) -> None:
         """Close all database connections."""
         if self.connection_pool:

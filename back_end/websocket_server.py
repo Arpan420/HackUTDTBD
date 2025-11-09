@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from speech.conversation.orchestrator import ConversationOrchestrator
 from speech.conversation.database import DatabaseManager
+from speech.conversation.summarizer import ConversationSummarizer
 from facial_recognition_service import FacialRecognitionService
 
 # Import ESP32 connection functions from vision setup
@@ -77,6 +78,9 @@ class WebSocketServer:
         
         # Facial recognition service
         self.facial_recognition_service: Optional[FacialRecognitionService] = None
+        
+        # Summarizer for generating recaps (initialized when needed)
+        self.summarizer: Optional[ConversationSummarizer] = None
         
         # Queue for person switch notifications from background thread
         self.person_switch_queue: Optional[asyncio.Queue] = None
@@ -275,8 +279,12 @@ class WebSocketServer:
                                         if not person_name:
                                             person_name = person_id
                                         
-                                        # Get latest summary/recap
-                                        recap = self.facial_recognition_service.database_manager.get_latest_summary(person_id)
+                                        # Generate recap from all summaries
+                                        if not self.summarizer:
+                                            self.summarizer = ConversationSummarizer(
+                                                database_manager=self.facial_recognition_service.database_manager
+                                            )
+                                        recap = self.summarizer.generate_recap_from_summaries(person_id)
                                     except Exception as e:
                                         print(f"[WebSocket] Error getting person info: {e}")
                                 # else: person_id is None, so switch to no person
