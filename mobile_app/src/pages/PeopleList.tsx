@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { TopBar } from "../components/TopBar";
 import { BottomNav } from "../components/BottomNav";
 import { usePeopleStore } from "../store/usePeopleStore";
@@ -8,6 +8,12 @@ import { AddPersonModal } from "../components/people/AddPersonModal.tsx";
 export default function PeopleList() {
   const people = usePeopleStore((s) => s.people);
   const [open, setOpen] = useState(false);
+  const fetchPeople = usePeopleStore((s) => s.fetchPeople);
+
+  useEffect(() => {
+    fetchPeople();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div className="pb-20">
