@@ -2,8 +2,10 @@
 
 import json
 import time
+import uuid
+import threading
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Callable
 
 from .speech_handler import SpeechHandler
 from .face_handler import FaceHandler
@@ -12,6 +14,7 @@ from .state import ConversationState
 from .agent import ConversationAgent
 from .summarizer import ConversationSummarizer
 from .database import DatabaseManager
+from .tools.notification import set_notification_callback
 
 
 class ConversationOrchestrator:
@@ -60,9 +63,32 @@ class ConversationOrchestrator:
             on_person_lost=self._handle_person_lost
         )
         
+        # Callbacks for WebSocket communication
+        self.on_notification: Optional[Callable[[str, str], None]] = None
+        self.on_person_switch: Optional[Callable[[Optional[str], Optional[str], Optional[str]], None]] = None
+        self._previous_person_id: Optional[str] = None
+        
         # Running state
         self.is_running = False
         self.summary_generated = False
+    
+    def set_callbacks(
+        self,
+        on_notification: Optional[Callable[[str, str], None]] = None,
+        on_person_switch: Optional[Callable[[Optional[str], Optional[str], Optional[str]], None]] = None
+    ) -> None:
+        """Set callbacks for notifications and person switches.
+        
+        Args:
+            on_notification: Callback called with (title, message) when notification tool is used
+            on_person_switch: Callback called with (person_id, person_name, recap) when person changes
+        """
+        self.on_notification = on_notification
+        self.on_person_switch = on_person_switch
+        
+        # Also set notification callback in the tool
+        if on_notification:
+            set_notification_callback(on_notification)
     
     def initialize_speech_handler(self, **kwargs) -> None:
         """Initialize speech handler with audio stream callback.
@@ -113,6 +139,9 @@ class ConversationOrchestrator:
             person_id = event.data.get("person_id")
             present = event.data.get("present", False)
             if present and person_id:
+                # Check if person changed
+                if person_id != self._previous_person_id:
+                    self._handle_person_switch(person_id)
                 self.conversation_state.current_person_id = person_id
                 self.conversation_state.person_present = True
             else:
@@ -149,8 +178,110 @@ class ConversationOrchestrator:
             person_id: Detected person ID
             timestamp: When person was detected
         """
+        # Check if person changed
+        if person_id != self._previous_person_id:
+            self._handle_person_switch(person_id)
         self.conversation_state.current_person_id = person_id
         self.conversation_state.person_present = True
+    
+    def _handle_person_switch(self, person_id: Optional[str]) -> None:
+        """Handle person switch event.
+        
+        Args:
+            person_id: New person ID (or None if person lost/"nobody")
+        """
+        previous_person_id = self._previous_person_id
+        
+        # If switching to "nobody", do nothing
+        if person_id is None:
+            self._previous_person_id = None
+            return
+        
+        # If previous person had messages, summarize their conversation in background thread
+        if previous_person_id and self.database_manager:
+            try:
+                # Filter messages for the previous person
+                previous_messages = [
+                    msg for msg in self.conversation_state.messages
+                    if msg.person_id == previous_person_id
+                ]
+                
+                if previous_messages:
+                    print(f"[Orchestrator] Queuing summary generation for {previous_person_id} (non-blocking)")
+                    
+                    # Create a temporary conversation state with only previous person's messages
+                    from .state import ConversationState
+                    temp_state = ConversationState()
+                    temp_state.messages = previous_messages.copy()  # Copy to avoid race conditions
+                    temp_state.conversation_id = self.conversation_state.conversation_id
+                    temp_state.current_person_id = previous_person_id
+                    
+                    # Run summary generation in background thread
+                    def _generate_summary_async():
+                        try:
+                            # Generate and save summary
+                            summary_text = self.summarizer.generate_and_save_summary(
+                                temp_state,
+                                previous_person_id
+                            )
+                            
+                            # Update faces table with recap (latest summary)
+                            if summary_text:
+                                try:
+                                    self.database_manager.create_or_update_face(
+                                        person_id=previous_person_id,
+                                        recap=summary_text
+                                    )
+                                    print(f"[Orchestrator] Summary completed and recap updated for {previous_person_id}")
+                                except Exception as e:
+                                    print(f"Warning: Failed to update face recap: {e}")
+                        except Exception as e:
+                            print(f"Warning: Failed to generate summary in background thread: {e}")
+                            import traceback
+                            traceback.print_exc()
+                    
+                    # Start background thread for summary generation
+                    summary_thread = threading.Thread(target=_generate_summary_async, daemon=True)
+                    summary_thread.start()
+            except Exception as e:
+                print(f"Warning: Failed to queue summary generation: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        # Update previous person ID
+        self._previous_person_id = person_id
+        
+        # Check if person exists in database
+        person_exists = False
+        person_name = None
+        recap = None
+        
+        if self.database_manager:
+            try:
+                person_exists = self.database_manager.person_exists(person_id)
+                
+                # Get person name
+                person_name = self.database_manager.get_person_name(person_id)
+                if not person_name:
+                    person_name = person_id  # Fallback to person_id as name
+                
+                # If person exists, get their recap
+                if person_exists:
+                    recap = self.database_manager.get_latest_summary(person_id)
+            except Exception as e:
+                print(f"Warning: Failed to check person existence: {e}")
+        
+        # If switching to new person, create new conversation thread
+        if not person_exists:
+            self.conversation_state.conversation_id = str(uuid.uuid4())
+            print(f"[Orchestrator] Created new conversation thread for new person: {person_id}")
+        
+        # Call person switch callback if set (includes recap as description change)
+        if self.on_person_switch:
+            try:
+                self.on_person_switch(person_id, person_name, recap)
+            except Exception as e:
+                print(f"Error in person switch callback: {e}")
     
     def _handle_person_lost(self, person_id: str, timestamp: datetime) -> None:
         """Handle person loss (Phase 2).
@@ -235,4 +366,8 @@ class ConversationOrchestrator:
         # Close database connection
         if self.database_manager:
             self.database_manager.close()
+        
+        # Note: ESP32 stream integration placeholder
+        # In the future, ESP32 will maintain the current interaction ID
+        # For now, interaction ID is maintained in conversation_state.conversation_id
 

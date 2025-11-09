@@ -29,3 +29,6 @@ pyaudio
 
 # Web search for research agent
 tavily-python
+
+# WebSocket server
+websockets

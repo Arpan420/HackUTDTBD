@@ -1,0 +1,9 @@
+# Database setup script dependencies
+# Install with: pip install -r database/requirements.txt
+
+# PostgreSQL/Supabase database driver
+psycopg2-binary>=2.9.0
+
+# Environment variable management
+python-dotenv>=1.0.0
+

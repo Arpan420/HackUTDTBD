@@ -13,6 +13,16 @@ from datetime import datetime
 from voxel_sdk.device_controller import DeviceController
 from voxel_sdk.ble import BleVoxelTransport
 
+# Import frame receiver for facial recognition
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+try:
+    from frame_receiver import process_frame as process_frame_recognition
+    FRAME_RECEIVER_AVAILABLE = True
+except ImportError as e:
+    print(f"[Vision] Warning: Frame receiver not available: {e}")
+    FRAME_RECEIVER_AVAILABLE = False
+    process_frame_recognition = None
+
 try:
     import cv2
     import numpy as np
@@ -60,8 +70,20 @@ def _recv_exact(conn: socket.socket, length: int) -> bytes:
 
 
 def processFrame(frame_data: bytes, timestamp: str) -> None:
-    """Process a frame: save to tmp/ in workspace directory with timestamp and print message."""
-    # Create tmp directory in workspace directory
+    """Process a frame: save to tmp/ in workspace directory with timestamp and process through facial recognition."""
+    # Process frame through facial recognition
+    if FRAME_RECEIVER_AVAILABLE and process_frame_recognition:
+        try:
+            person_id, switch_detected = process_frame_recognition(frame_data)
+            if switch_detected:
+                if person_id:
+                    print(f"[Vision] Person switch detected: {person_id}")
+                else:
+                    print(f"[Vision] Person switch detected: No person")
+        except Exception as e:
+            print(f"[Vision] Error processing frame through recognition: {e}")
+    
+    # Also save to tmp for debugging (optional)
     workspace_dir = os.path.dirname(os.path.abspath(__file__))
     temp_dir = os.path.join(workspace_dir, "tmp")
     os.makedirs(temp_dir, exist_ok=True)
