@@ -17,7 +17,8 @@ export interface PersonSwitchMessage extends WebSocketMessage {
   type: "switch_interaction_person";
   person_id: string | null;
   person_name: string;
-  blurb: string;
+  blurb: string | null;
+  recap?: string | null; // Description/recap to display on lines 2-3
 }
 
 export type MessageHandler = (message: WebSocketMessage) => void;

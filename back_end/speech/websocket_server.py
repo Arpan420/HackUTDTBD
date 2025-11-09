@@ -273,15 +273,15 @@ class WebSocketServer:
             websocket: WebSocket connection
             person_id: Person ID
             person_name: Person name (from database lookup)
-            recap: Recap text (latest summary for the person)
+            recap: Recap text (latest summary for the person) - displayed as description on lines 2-3
         """
         try:
             payload = {
                 "type": "switch_interaction_person",
                 "person_id": person_id,
                 "person_name": person_name or "Unknown",
-                "blurb": f"Last seen: 5 min ago" if not recap else None,  # Mocked for now if no recap
-                "recap": recap
+                "blurb": f"Last seen: 5 min ago" if not recap else None,  # Fallback if no recap
+                "recap": recap  # Description/recap to display on lines 2-3
             }
             await websocket.send(json.dumps(payload))
             print(f"[WebSocket] Sent person switch: {person_name} ({person_id})")

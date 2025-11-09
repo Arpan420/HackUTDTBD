@@ -69,7 +69,7 @@ class ExampleMentraOSApp extends AppServer {
 
     // Display state
     let currentPersonName: string = "Unknown";
-    let currentPersonBlurb: string = "No interaction";
+    let currentPersonDescription: string | null = null; // Recap/description for lines 2-3
     const notifications: Array<{
       title: string;
       message: string;
@@ -77,6 +77,33 @@ class ExampleMentraOSApp extends AppServer {
     }> = [];
     const MAX_NOTIFICATIONS = 3;
     const NOTIFICATION_DISPLAY_TIME = 5000; // 5 seconds
+
+    /**
+     * Helper function to wrap text to fit within a line length
+     */
+    const wrapText = (text: string, maxLength: number = 50): string[] => {
+      if (text.length <= maxLength) {
+        return [text];
+      }
+      const words = text.split(" ");
+      const lines: string[] = [];
+      let currentLine = "";
+
+      for (const word of words) {
+        if ((currentLine + word).length <= maxLength) {
+          currentLine += (currentLine ? " " : "") + word;
+        } else {
+          if (currentLine) {
+            lines.push(currentLine);
+          }
+          currentLine = word;
+        }
+      }
+      if (currentLine) {
+        lines.push(currentLine);
+      }
+      return lines;
+    };
 
     /**
      * Update the display with current person info and notifications
@@ -87,13 +114,31 @@ class ExampleMentraOSApp extends AppServer {
       // Line 1: Person name
       lines.push(currentPersonName);
 
-      // Line 2: Person blurb
-      lines.push(currentPersonBlurb);
+      // Lines 2-3: Person description/recap (wrapped if necessary)
+      if (currentPersonDescription) {
+        const wrappedDescription = wrapText(currentPersonDescription);
+        // Add up to 2 lines (lines 2-3)
+        if (wrappedDescription.length > 0) {
+          lines.push(wrappedDescription[0]);
+        }
+        if (wrappedDescription.length > 1) {
+          lines.push(wrappedDescription[1]);
+        } else if (wrappedDescription.length === 1) {
+          // If only one line, add empty line to maintain spacing
+          lines.push("");
+        }
+      } else {
+        // No description, add empty lines to maintain spacing
+        lines.push("");
+        lines.push("");
+      }
 
-      // Lines 3+: Recent notifications
+      // Line 4: Empty line separator
+      lines.push("");
+
+      // Lines 5+: Recent notifications
       const recentNotifications = notifications.slice(0, MAX_NOTIFICATIONS);
       if (recentNotifications.length > 0) {
-        lines.push(""); // Empty line separator
         recentNotifications.forEach((notif) => {
           lines.push(`${notif.title}: ${notif.message}`);
         });
@@ -143,7 +188,8 @@ class ExampleMentraOSApp extends AppServer {
           `[Person Switch] ${personMsg.person_name} (${personMsg.person_id})`
         );
         currentPersonName = personMsg.person_name;
-        currentPersonBlurb = personMsg.blurb;
+        // Use recap as description, fallback to blurb if no recap
+        currentPersonDescription = personMsg.recap || personMsg.blurb || null;
         updateDisplay();
       }
     });

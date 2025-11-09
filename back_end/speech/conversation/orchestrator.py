@@ -3,6 +3,7 @@
 import json
 import time
 import uuid
+import threading
 from datetime import datetime
 from typing import Optional, Callable
 
@@ -196,7 +197,7 @@ class ConversationOrchestrator:
             self._previous_person_id = None
             return
         
-        # If previous person had messages, summarize their conversation
+        # If previous person had messages, summarize their conversation in background thread
         if previous_person_id and self.database_manager:
             try:
                 # Filter messages for the previous person
@@ -206,32 +207,44 @@ class ConversationOrchestrator:
                 ]
                 
                 if previous_messages:
-                    print(f"[Orchestrator] Summarizing conversation for {previous_person_id}")
+                    print(f"[Orchestrator] Queuing summary generation for {previous_person_id} (non-blocking)")
                     
                     # Create a temporary conversation state with only previous person's messages
                     from .state import ConversationState
                     temp_state = ConversationState()
-                    temp_state.messages = previous_messages
+                    temp_state.messages = previous_messages.copy()  # Copy to avoid race conditions
                     temp_state.conversation_id = self.conversation_state.conversation_id
                     temp_state.current_person_id = previous_person_id
                     
-                    # Generate and save summary
-                    summary_text = self.summarizer.generate_and_save_summary(
-                        temp_state,
-                        previous_person_id
-                    )
-                    
-                    # Update faces table with recap (latest summary)
-                    if summary_text:
+                    # Run summary generation in background thread
+                    def _generate_summary_async():
                         try:
-                            self.database_manager.create_or_update_face(
-                                person_id=previous_person_id,
-                                recap=summary_text
+                            # Generate and save summary
+                            summary_text = self.summarizer.generate_and_save_summary(
+                                temp_state,
+                                previous_person_id
                             )
+                            
+                            # Update faces table with recap (latest summary)
+                            if summary_text:
+                                try:
+                                    self.database_manager.create_or_update_face(
+                                        person_id=previous_person_id,
+                                        recap=summary_text
+                                    )
+                                    print(f"[Orchestrator] Summary completed and recap updated for {previous_person_id}")
+                                except Exception as e:
+                                    print(f"Warning: Failed to update face recap: {e}")
                         except Exception as e:
-                            print(f"Warning: Failed to update face recap: {e}")
+                            print(f"Warning: Failed to generate summary in background thread: {e}")
+                            import traceback
+                            traceback.print_exc()
+                    
+                    # Start background thread for summary generation
+                    summary_thread = threading.Thread(target=_generate_summary_async, daemon=True)
+                    summary_thread.start()
             except Exception as e:
-                print(f"Warning: Failed to summarize previous person's conversation: {e}")
+                print(f"Warning: Failed to queue summary generation: {e}")
                 import traceback
                 traceback.print_exc()
         
@@ -263,17 +276,7 @@ class ConversationOrchestrator:
             self.conversation_state.conversation_id = str(uuid.uuid4())
             print(f"[Orchestrator] Created new conversation thread for new person: {person_id}")
         
-        # If person exists, send notification with name and recap
-        if person_exists and self.on_notification and recap:
-            try:
-                self.on_notification(
-                    f"Switching to {person_name}",
-                    recap
-                )
-            except Exception as e:
-                print(f"Error sending notification: {e}")
-        
-        # Call person switch callback if set
+        # Call person switch callback if set (includes recap as description change)
         if self.on_person_switch:
             try:
                 self.on_person_switch(person_id, person_name, recap)

@@ -31,7 +31,7 @@ class FaceHandler:
         # Initialize mock person tracker
         self.mock_tracker = MockPersonTracker(
             on_person_changed=self._handle_person_changed,
-            interval_seconds=30.0
+            interval_seconds=10.0
         )
     
     def _handle_person_changed(self, person_id: Optional[str], timestamp: datetime) -> None:

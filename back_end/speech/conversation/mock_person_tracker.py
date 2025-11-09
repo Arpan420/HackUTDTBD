@@ -1,6 +1,6 @@
 """Mock person tracker for testing person switching logic.
 
-Cycles through fake people names on a 30-second interval.
+Cycles through fake people names on a 10-second interval.
 """
 
 import threading
@@ -13,19 +13,19 @@ class MockPersonTracker:
     """Mock person tracker that cycles through fake people names.
     
     Similar to ESP32 processing logic, runs in an independent thread
-    and cycles between "Amy", "Bob", and "Charlie" every 30 seconds.
+    and cycles between "Amy", "Bob", and "Charlie" every 10 seconds.
     """
     
     def __init__(
         self,
         on_person_changed: Optional[Callable[[Optional[str], datetime], None]] = None,
-        interval_seconds: float = 30.0
+        interval_seconds: float = 10.0
     ):
         """Initialize mock person tracker.
         
         Args:
             on_person_changed: Callback called when person changes (person_id, timestamp)
-            interval_seconds: Time interval between person switches (default: 30 seconds)
+            interval_seconds: Time interval between person switches (default: 10 seconds)
         """
         self.fake_people = ["Amy", "Bob", "Charlie"]
         self.on_person_changed = on_person_changed

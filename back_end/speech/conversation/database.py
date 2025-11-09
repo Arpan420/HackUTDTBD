@@ -399,6 +399,8 @@ class DatabaseManager:
             socials: Social information as JSON dict (optional)
             recap: Recap text (optional)
         """
+        if recap:
+            print(f"[Database] Preview update: Updating recap/preview for person {person_id}")
         conn = self._get_connection()
         try:
             with conn.cursor() as cur:
@@ -419,8 +421,12 @@ class DatabaseManager:
                     (person_id, embedding, count, socials_json, recap)
                 )
                 conn.commit()
+                if recap:
+                    print(f"[Database] Preview update: Recap/preview updated successfully for person {person_id}")
         except Exception as e:
             conn.rollback()
+            if recap:
+                print(f"[Database] Preview update: Failed to update recap/preview for person {person_id}: {e}")
             raise RuntimeError(f"Failed to create or update face: {e}")
         finally:
             self._return_connection(conn)
@@ -460,6 +466,7 @@ class DatabaseManager:
         Returns:
             ID of the created summary
         """
+        print(f"[Database] DB call: Inserting summary for person {person_id}")
         conn = self._get_connection()
         try:
             with conn.cursor() as cur:
@@ -473,9 +480,11 @@ class DatabaseManager:
                 )
                 summary_id = cur.fetchone()[0]
                 conn.commit()
+                print(f"[Database] DB call: Summary inserted successfully with ID {summary_id} for person {person_id}")
                 return summary_id
         except Exception as e:
             conn.rollback()
+            print(f"[Database] DB call: Failed to insert summary for person {person_id}: {e}")
             raise RuntimeError(f"Failed to add summary: {e}")
         finally:
             self._return_connection(conn)
@@ -489,6 +498,7 @@ class DatabaseManager:
         Returns:
             Latest summary text or None if not found
         """
+        print(f"[Database] Summary fetch request: Fetching latest summary for person {person_id}")
         conn = self._get_connection()
         try:
             with conn.cursor() as cur:
@@ -503,8 +513,13 @@ class DatabaseManager:
                     (person_id,)
                 )
                 row = cur.fetchone()
+                if row:
+                    print(f"[Database] Summary fetched: Found summary for person {person_id}")
+                else:
+                    print(f"[Database] Summary fetched: No summary found for person {person_id}")
                 return row[0] if row else None
         except Exception as e:
+            print(f"[Database] Summary fetch request: Failed to fetch summary for person {person_id}: {e}")
             raise RuntimeError(f"Failed to get latest summary: {e}")
         finally:
             self._return_connection(conn)

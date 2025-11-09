@@ -63,6 +63,7 @@ Return only valid JSON, no additional text."""
 
         try:
             response = self.llm.invoke(prompt)
+            print(f"[Summarizer] Summary responded: LLM returned response for conversation {conversation_state.conversation_id}")
             
             # Extract JSON from response
             if hasattr(response, "content"):
@@ -126,6 +127,8 @@ Return only valid JSON, no additional text."""
         Returns:
             Summary text if successful, None otherwise
         """
+        print(f"[Summarizer] Summary triggered: Generating summary for person {person_id}, conversation {conversation_state.conversation_id}")
+        
         if not self.database_manager:
             print("Warning: Database manager not available, cannot save summary")
             return None
@@ -140,7 +143,7 @@ Return only valid JSON, no additional text."""
                 # Fallback: create a text representation of the summary
                 summary_text = json.dumps(summary_dict, indent=2)
             
-            # Save to database
+            # Save to database (logging handled in database.py)
             self.database_manager.add_summary(person_id, summary_text)
             
             print(f"[Summarizer] Saved summary for person {person_id}")
