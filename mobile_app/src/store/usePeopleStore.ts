@@ -10,6 +10,7 @@ type State = {
                                  { text: string }) => void;   // ← NEW
   addInteraction: (personId: string,
                    i: Omit<Interaction, "id">) => void;       // ← NEW
+  replacePeople: (people: Person[]) => void;
 };
 
 const uid = () => Math.random().toString(36).slice(2);
@@ -80,6 +81,11 @@ export const usePeopleStore = create<State>()(
                   lastSeen: i0.when ?? p.lastSeen,
                 }
           ),
+        })),
+
+      replacePeople: (newPeople) =>
+        set(() => ({
+          people: newPeople,
         })),
     }),
     { name: "people-store-v1" }
