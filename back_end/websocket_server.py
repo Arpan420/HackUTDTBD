@@ -147,7 +147,8 @@ class WebSocketServer:
             # Step 2: Connect to WiFi
             try:
                 print("\n[WebSocket] Connecting to WiFi...")
-                wifi_response = self.esp32_controller.execute_device_command("connectWifi:bfjnkasdbkasvbu|adamantium")
+                #wifi_response = self.esp32_controller.execute_device_command("connectWifi:bfjnkasdbkasvbu|adamantium")
+                wifi_response = self.esp32_controller.execute_device_command("connectWifi:ApamDaGoat|apamthegoat")
                 
                 if isinstance(wifi_response, dict):
                     if "error" in wifi_response:
@@ -434,21 +435,25 @@ class WebSocketServer:
                             traceback.print_exc()
                             continue
                     
+                    # Increment frame count before checking
+                    frame_count += 1
+                    
                     # Queue frame for non-blocking face recognition processing
+                    # Only process every 10th frame (when frame_count % 10 == 1) to reduce load
                     queue_dropped = False
                     if self.facial_recognition_service and self.face_recognition_queue:
-                        try:
-                            # Put frame in queue (non-blocking, drop if queue is full to prevent memory buildup)
-                            self.face_recognition_queue.put_nowait(frame_data)
-                        except queue.Full:
-                            # Queue is full, skip this frame to maintain FPS
-                            queue_dropped = True
-                        except Exception as e:
-                            print(f"[WebSocket] Error queuing frame for recognition: {e}")
+                        if frame_count % 10 == 1:
+                            try:
+                                # Put frame in queue (non-blocking, drop if queue is full to prevent memory buildup)
+                                self.face_recognition_queue.put_nowait(frame_data)
+                            except queue.Full:
+                                # Queue is full, skip this frame to maintain FPS
+                                queue_dropped = True
+                            except Exception as e:
+                                print(f"[WebSocket] Error queuing frame for recognition: {e}")
                     
                     # Calculate FPS and log summary
                     frame_end_time = time.time()
-                    frame_count += 1
                     frame_timestamps.append(frame_end_time)
                     if len(frame_timestamps) > fps_window_size:
                         frame_timestamps.pop(0)
@@ -465,7 +470,7 @@ class WebSocketServer:
                     total_time = frame_end_time - frame_start_time
                     queue_depth = self.face_recognition_queue.qsize() if self.face_recognition_queue else 0
                     dropped_str = " [DROPPED]" if queue_dropped else ""
-                    print(f"[Frame #{frame_count}] {total_time*1000:.1f}ms | FPS: {current_fps:.1f} | Queue: {queue_depth}{dropped_str}")
+                    #print(f"[Frame #{frame_count}] {total_time*1000:.1f}ms | FPS: {current_fps:.1f} | Queue: {queue_depth}{dropped_str}")
                 
                 except socket.timeout:
                     consecutive_errors += 1
@@ -547,17 +552,16 @@ class WebSocketServer:
                         # If person switch detected, notify all WebSocket clients and update orchestrator state
                         if switch_detected:
                             person_name = None
-                            recap = None
                             
                             if person_id is not None and self.facial_recognition_service.database_manager:
-                                # Switch to a person - get name and recap
+                                # Switch to a person - get name (fast path: check cache first)
                                 try:
                                     # Get person name (with caching to avoid repeated DB queries)
-                                    # Check cache first
+                                    # Check cache first (fast, no blocking)
                                     if person_id in self.facial_recognition_service._person_name_cache:
                                         person_name = self.facial_recognition_service._person_name_cache[person_id]
                                     else:
-                                        # Cache miss - query database
+                                        # Cache miss - query database (blocking, but fast)
                                         person_name = self.facial_recognition_service.database_manager.get_person_name(person_id)
                                         if person_name:
                                             # Cache the result
@@ -565,13 +569,32 @@ class WebSocketServer:
                                     if not person_name:
                                         person_name = person_id
                                     
-                                    # Generate recap from all summaries (this can be slow, but only happens on person switch)
+                                    # Generate recap from all summaries in background thread (non-blocking)
+                                    # This prevents blocking the worker thread for up to 30 seconds
                                     if not self.summarizer:
                                         self.summarizer = ConversationSummarizer(
                                             database_manager=self.facial_recognition_service.database_manager
                                         )
                                     
-                                    recap = self.summarizer.generate_recap_from_summaries(person_id)
+                                    # Generate recap in background thread to avoid blocking
+                                    def _generate_recap_async(target_person_id: str, target_person_name: str):
+                                        """Generate recap in background thread (non-blocking)."""
+                                        try:
+                                            generated_recap = self.summarizer.generate_recap_from_summaries(target_person_id)
+                                            print(f"[FaceRecognitionWorker] [Background] Recap generated for {target_person_name} ({target_person_id})")
+                                            # Note: Recap is generated but not sent to clients to avoid blocking
+                                            # Future enhancement: Could send follow-up notification with recap
+                                        except Exception as e:
+                                            print(f"[FaceRecognitionWorker] [Background] Error generating recap for {target_person_id}: {e}")
+                                    
+                                    # Start background thread for recap generation (non-blocking)
+                                    recap_thread = threading.Thread(
+                                        target=_generate_recap_async,
+                                        args=(person_id, person_name),
+                                        daemon=True
+                                    )
+                                    recap_thread.start()
+                                    # Continue without waiting - send notification immediately with recap=None
                                 except Exception as e:
                                     print(f"[FaceRecognitionWorker] Error getting person info: {e}")
                             # else: person_id is None, so switch to no person
@@ -603,8 +626,9 @@ class WebSocketServer:
                                 else:
                                     print(f"[FaceRecognitionWorker] ⚠️ No orchestrator found for connection {connection_id}")
                             
-                            # Send person switch notification to all connected clients
-                            self._notify_all_clients_person_switch(person_id, person_name, recap)
+                            # Send person switch notification immediately (non-blocking) without waiting for recap
+                            # Recap will be None initially, generated in background
+                            self._notify_all_clients_person_switch(person_id, person_name, None)
                     except Exception as e:
                         print(f"[FaceRecognitionWorker] Error processing frame: {e}")
                         import traceback

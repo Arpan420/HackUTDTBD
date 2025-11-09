@@ -25,7 +25,7 @@ print("[FacialRecognition] InsightFace Model Ready.")
 MATCH_THRESHOLD = 0.2  # Cosine Similarity
 
 # Detection confidence threshold for face detection
-DETECTION_CONFIDENCE_THRESHOLD = 0.5  # Minimum confidence score for face detection
+DETECTION_CONFIDENCE_THRESHOLD = 0.75  # Minimum confidence score for face detection
 
 
 class FacialRecognitionService:
@@ -61,7 +61,7 @@ class FacialRecognitionService:
         
         # Embedding averaging: person_id -> (averaged_embedding, count)
         self.embedding_averages: Dict[str, tuple[np.ndarray, int]] = {}
-        
+    
         # Cache face database to avoid reloading on every frame
         self._face_database_cache: Optional[Dict[str, np.ndarray]] = None
         self._face_database_cache_time: float = 0.0
@@ -124,6 +124,7 @@ class FacialRecognitionService:
                 try:
                     # Check detection confidence score
                     det_score = faces[0].det_score
+                    print(f"AAAAAAAAAAA [FacialRecognition] Detection confidence score: {det_score}")
                     
                     # Filter by confidence threshold
                     if det_score < DETECTION_CONFIDENCE_THRESHOLD:
@@ -363,35 +364,6 @@ class FacialRecognitionService:
             except Exception as e:
                 print(f"[FacialRecognition] Error generating UUID: {e}")
                 return None
-            
-            # Save image to tmp directory
-            try:
-                # Decode image from bytes again to save
-                nparr = np.frombuffer(image_data, np.uint8)
-                img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-                
-                if img is not None:
-                    try:
-                        # Create tmp directory in back_end
-                        back_end_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                        tmp_dir = os.path.join(back_end_dir, "tmp")
-                        os.makedirs(tmp_dir, exist_ok=True)
-                        
-                        # Create filename with timestamp and person_id
-                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-                        filename = f"{new_person_id}_{timestamp}.jpg"
-                        filepath = os.path.join(tmp_dir, filename)
-                        
-                        # Save image
-                        cv2.imwrite(filepath, img)
-                    except OSError as e:
-                        print(f"[FacialRecognition] Error creating tmp directory or saving image: {e}")
-                    except Exception as e:
-                        print(f"[FacialRecognition] Error saving image: {e}")
-            except Exception as e:
-                print(f"[FacialRecognition] Error decoding image for saving: {e}")
-                # Continue - image saving is optional
-            
             # Save to database (async/non-blocking - don't wait for completion)
             if self.database_manager:
                 try:
