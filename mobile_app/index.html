@@ -1,10 +1,36 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Let the UA know we support both schemes -->
+    <meta name="color-scheme" content="light dark" />
     <title>mobileapp</title>
+    <script>
+      // Boot theme BEFORE CSS/JS render to avoid FOUC
+      (function () {
+        try {
+          const root = document.documentElement;
+          // migrate & normalize keys just once
+          const old = localStorage.getItem("ui-force-dark");
+          if (old !== null) {
+            localStorage.setItem("theme", old === "1" ? "dark" : "light");
+            localStorage.removeItem("ui-force-dark");
+            localStorage.removeItem("ui-white-mode");
+          }
+          const saved = localStorage.getItem("theme");
+          const preferDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+          const theme = saved === "light" || saved === "dark" ? saved : (preferDark ? "dark" : "light");
+          if (theme === "dark") root.classList.add("dark"); else root.classList.remove("dark");
+        } catch (e) {
+          // on any error, fall back to system
+          if (window.matchMedia("(prefers-color-scheme: dark)").matches) {
+            document.documentElement.classList.add("dark");
+          }
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
