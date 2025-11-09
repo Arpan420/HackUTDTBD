@@ -194,88 +194,129 @@ class WebSocketServer:
         print("[WebSocket] Starting ESP32 frame processing loop...")
         self.esp32_conn.settimeout(5.0)
         
+        # Error tracking for graceful handling
+        consecutive_errors = 0
+        max_consecutive_errors = 10  # Break after 10 consecutive errors
+        
         try:
             while not self.esp32_stop_flag.is_set():
-                # Read frame header (8 bytes: 4-byte magic + 4-byte length)
-                header = _recv_exact(self.esp32_conn, 8)
-                if not header:
-                    print("[WebSocket] ESP32 stream closed by device")
-                    break
-                
-                if header[:4] != b"VXL0":
-                    print("[WebSocket] Invalid frame header, stopping")
-                    break
-                
-                frame_len = struct.unpack(">I", header[4:])[0]
-                if frame_len <= 0 or frame_len > 5 * 1024 * 1024:
-                    print(f"[WebSocket] Invalid frame length: {frame_len}")
-                    break
-                
-                # Read frame payload
-                payload = _recv_exact(self.esp32_conn, frame_len)
-                if not payload:
-                    print("[WebSocket] Failed to read frame payload")
-                    break
-                
-                # Decode frame
                 try:
-                    import cv2
-                    import numpy as np
-                    frame_array = np.frombuffer(payload, dtype=np.uint8)
-                    image = cv2.imdecode(frame_array, cv2.IMREAD_COLOR)
-                    if image is None:
-                        print("[WebSocket] Failed to decode JPEG frame, skipping...")
+                    # Read frame header (8 bytes: 4-byte magic + 4-byte length)
+                    header = _recv_exact(self.esp32_conn, 8)
+                    if not header:
+                        consecutive_errors += 1
+                        if consecutive_errors >= max_consecutive_errors:
+                            print("[WebSocket] ESP32 stream closed by device (persistent)")
+                            break
+                        print("[WebSocket] Failed to read frame header, skipping...")
                         continue
-                    # Re-encode as JPEG for processing
-                    _, encoded = cv2.imencode('.jpg', image)
-                    frame_data = encoded.tobytes()
-                except Exception as e:
-                    print(f"[WebSocket] Error decoding frame: {e}, using raw data")
-                    frame_data = payload
+                    
+                    if header[:4] != b"VXL0":
+                        consecutive_errors += 1
+                        if consecutive_errors >= max_consecutive_errors:
+                            print("[WebSocket] Invalid frame header (persistent), stopping")
+                            break
+                        print("[WebSocket] Invalid frame header, skipping frame...")
+                        continue
+                    
+                    frame_len = struct.unpack(">I", header[4:])[0]
+                    if frame_len <= 0 or frame_len > 5 * 1024 * 1024:
+                        consecutive_errors += 1
+                        if consecutive_errors >= max_consecutive_errors:
+                            print(f"[WebSocket] Invalid frame length (persistent): {frame_len}")
+                            break
+                        print(f"[WebSocket] Invalid frame length: {frame_len}, skipping...")
+                        continue
+                    
+                    # Read frame payload
+                    payload = _recv_exact(self.esp32_conn, frame_len)
+                    if not payload:
+                        consecutive_errors += 1
+                        if consecutive_errors >= max_consecutive_errors:
+                            print("[WebSocket] Failed to read frame payload (persistent)")
+                            break
+                        print("[WebSocket] Failed to read frame payload, skipping frame...")
+                        continue
+                    
+                    # Reset error counter on successful frame read
+                    consecutive_errors = 0
                 
-                # Process frame through facial recognition service (for WebSocket notifications)
-                if self.facial_recognition_service:
+                    # Decode frame
                     try:
-                        # process_frame returns (person_id, switch_detected)
-                        person_id, switch_detected = self.facial_recognition_service.process_frame(frame_data)
-                        
-                        # If person switch detected, notify all WebSocket clients
-                        if switch_detected:
-                            person_name = None
-                            recap = None
-                            
-                            if person_id is not None and self.facial_recognition_service.database_manager:
-                                # Switch to a person - get name and recap
-                                try:
-                                    person_name = self.facial_recognition_service.database_manager.get_person_name(person_id)
-                                    if not person_name:
-                                        person_name = person_id
-                                    
-                                    # Get latest summary/recap
-                                    recap = self.facial_recognition_service.database_manager.get_latest_summary(person_id)
-                                except Exception as e:
-                                    print(f"[WebSocket] Error getting person info: {e}")
-                            # else: person_id is None, so switch to no person
-                            
-                            # Send person switch notification to all connected clients
-                            self._notify_all_clients_person_switch(person_id, person_name, recap)
+                        import cv2
+                        import numpy as np
+                        frame_array = np.frombuffer(payload, dtype=np.uint8)
+                        image = cv2.imdecode(frame_array, cv2.IMREAD_COLOR)
+                        if image is None:
+                            print("[WebSocket] Failed to decode JPEG frame, skipping...")
+                            continue
+                        # Re-encode as JPEG for processing
+                        _, encoded = cv2.imencode('.jpg', image)
+                        frame_data = encoded.tobytes()
                     except Exception as e:
-                        print(f"[WebSocket] Error processing frame: {e}")
-                
-                # Also pass frame to all active orchestrators' face handlers
-                # This ensures the orchestrator's face handler processes frames and triggers its callbacks
-                for connection_id, conn_info in list(self.connections.items()):
-                    orchestrator = conn_info.get("orchestrator")
-                    if orchestrator and orchestrator.face_handler:
+                        print(f"[WebSocket] Error decoding frame: {e}, skipping frame...")
+                        continue
+                    
+                    # Process frame through facial recognition service (for WebSocket notifications)
+                    if self.facial_recognition_service:
                         try:
-                            orchestrator.face_handler.process_frame(frame_data)
+                            # process_frame returns (person_id, switch_detected)
+                            person_id, switch_detected = self.facial_recognition_service.process_frame(frame_data)
+                            
+                            # If person switch detected, notify all WebSocket clients
+                            if switch_detected:
+                                person_name = None
+                                recap = None
+                                
+                                if person_id is not None and self.facial_recognition_service.database_manager:
+                                    # Switch to a person - get name and recap
+                                    try:
+                                        person_name = self.facial_recognition_service.database_manager.get_person_name(person_id)
+                                        if not person_name:
+                                            person_name = person_id
+                                        
+                                        # Get latest summary/recap
+                                        recap = self.facial_recognition_service.database_manager.get_latest_summary(person_id)
+                                    except Exception as e:
+                                        print(f"[WebSocket] Error getting person info: {e}")
+                                # else: person_id is None, so switch to no person
+                                
+                                # Send person switch notification to all connected clients
+                                self._notify_all_clients_person_switch(person_id, person_name, recap)
                         except Exception as e:
-                            print(f"[WebSocket] Error passing frame to orchestrator {connection_id}: {e}")
+                            print(f"[WebSocket] Error processing frame: {e}")
+                            # Continue processing - don't break on recognition errors
+                    
+                    # Also pass frame to all active orchestrators' face handlers
+                    # This ensures the orchestrator's face handler processes frames and triggers its callbacks
+                    for connection_id, conn_info in list(self.connections.items()):
+                        orchestrator = conn_info.get("orchestrator")
+                        if orchestrator and orchestrator.face_handler:
+                            try:
+                                orchestrator.face_handler.process_frame(frame_data)
+                            except Exception as e:
+                                print(f"[WebSocket] Error passing frame to orchestrator {connection_id}: {e}")
+                                # Continue processing - don't break on orchestrator errors
                 
-        except socket.timeout:
-            print("[WebSocket] ESP32 connection timeout")
+                except socket.timeout:
+                    consecutive_errors += 1
+                    if consecutive_errors >= max_consecutive_errors:
+                        print("[WebSocket] ESP32 connection timeout (persistent)")
+                        break
+                    print("[WebSocket] ESP32 connection timeout, retrying...")
+                    continue
+                except Exception as e:
+                    consecutive_errors += 1
+                    if consecutive_errors >= max_consecutive_errors:
+                        print(f"[WebSocket] Error in ESP32 frame processing (persistent): {e}")
+                        import traceback
+                        traceback.print_exc()
+                        break
+                    print(f"[WebSocket] Error in ESP32 frame processing: {e}, retrying...")
+                    continue
+                
         except Exception as e:
-            print(f"[WebSocket] Error in ESP32 frame processing: {e}")
+            print(f"[WebSocket] Fatal error in ESP32 frame processing: {e}")
             import traceback
             traceback.print_exc()
         finally:
@@ -623,20 +664,28 @@ class WebSocketServer:
         
         Args:
             websocket: WebSocket connection
-            person_id: Person ID
+            person_id: Person ID (None if no person detected)
             person_name: Person name (from database lookup)
             recap: Recap text (latest summary for the person) - displayed as description on lines 2-3
         """
         try:
+            # Differentiate between "no person detected" and "unknown person detected"
+            if person_id is None:
+                # No person detected
+                display_name = "No person detected"
+            else:
+                # Person detected - use person_name or "Unknown" if not set
+                display_name = person_name or "Unknown"
+            
             payload = {
                 "type": "switch_interaction_person",
                 "person_id": person_id,
-                "person_name": person_name or "Unknown",
+                "person_name": display_name,
                 "blurb": f"Last seen: 5 min ago" if not recap else None,  # Fallback if no recap
                 "recap": recap  # Description/recap to display on lines 2-3
             }
             await websocket.send(json.dumps(payload))
-            print(f"[WebSocket] ✅ Sent person switch: {person_name} ({person_id})")
+            print(f"[WebSocket] ✅ Sent person switch: {display_name} ({person_id})")
         except Exception as e:
             print(f"[WebSocket] Error sending person switch: {e}")
     

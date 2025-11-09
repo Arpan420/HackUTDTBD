@@ -7,6 +7,7 @@ from insightface.app import FaceAnalysis
 from typing import Optional, Dict, Any, List
 import sys
 import os
+import time
 from datetime import datetime
 
 # Add parent directory to path for imports
@@ -42,9 +43,18 @@ class FacialRecognitionService:
                 self.database_manager = None
         
         # Person switching state
-        self.frame_history: List[Optional[str]] = []  # Last 10 frame results (person_id or None)
+        self.frame_history: List[Optional[str]] = []  # Frame results (person_id or None)
         self.current_person_id: Optional[str] = None
-        self.history_size = 10
+        
+        # FPS tracking for dynamic thresholds
+        self.frame_timestamps: List[float] = []  # Timestamps of recent frames for FPS calculation
+        self.fps_window_size = 30  # Number of frames to use for FPS calculation
+        self.current_fps = 10.0  # Default to 10 FPS, will be updated dynamically
+        self.history_size = 10  # Will be adjusted based on FPS
+        
+        # Base thresholds at 10 FPS (target: 0.5s for person, 0.7s for no-person)
+        self.base_person_threshold = 5  # 5/10 frames at 10 FPS = 0.5s
+        self.base_no_person_threshold = 7  # 7/10 frames at 10 FPS = 0.7s
         
         # Embedding averaging: person_id -> (averaged_embedding, count)
         self.embedding_averages: Dict[str, tuple[np.ndarray, int]] = {}
@@ -107,8 +117,6 @@ class FacialRecognitionService:
                             # Convert bytes back to numpy array
                             embedding = np.frombuffer(embedding_bytes, dtype=np.float32)
                             database[person_id] = embedding
-                    
-                    print(f"[FacialRecognition] Loaded {len(database)} face embeddings from database")
             finally:
                 self.database_manager._return_connection(conn)
         except Exception as e:
@@ -164,12 +172,8 @@ class FacialRecognitionService:
         # Find best match
         best_match_id, best_score = self.find_best_match(embedding, database)
         
-        print(f"[FacialRecognition] 🔍 Matching: best_match={best_match_id}, score={best_score:.4f}, threshold={MATCH_THRESHOLD}")
-        
         # Check if match is above threshold
         if best_match_id and best_score >= MATCH_THRESHOLD:
-            print(f"[FacialRecognition] ✅ Match found: {best_match_id} (score: {best_score:.4f})")
-            
             # Update running average for this person
             if best_match_id in self.embedding_averages:
                 avg_embedding, count = self.embedding_averages[best_match_id]
@@ -177,11 +181,9 @@ class FacialRecognitionService:
                 new_count = count + 1
                 new_avg = (avg_embedding * count + embedding) / new_count
                 self.embedding_averages[best_match_id] = (new_avg, new_count)
-                print(f"[FacialRecognition] 📈 Updated average for {best_match_id} (count: {new_count})")
             else:
                 # First time seeing this person in this session, initialize with current embedding
                 self.embedding_averages[best_match_id] = (embedding.copy(), 1)
-                print(f"[FacialRecognition] 📈 Initialized average for {best_match_id} (count: 1)")
             
             return best_match_id
         
@@ -189,8 +191,6 @@ class FacialRecognitionService:
         if not database or best_score < MATCH_THRESHOLD:
             import uuid
             new_person_id = f"Unnamed_{uuid.uuid4().hex[:8]}"
-            
-            print(f"[FacialRecognition] 🆕 No match found (best_score: {best_score:.4f}), creating new person: {new_person_id}")
             
             # Save image to tmp directory
             try:
@@ -211,9 +211,8 @@ class FacialRecognitionService:
                     
                     # Save image
                     cv2.imwrite(filepath, img)
-                    print(f"[FacialRecognition] 📸 Saved new person image to: {filepath}")
-            except Exception as e:
-                print(f"[FacialRecognition] ⚠️  Error saving image: {e}")
+            except Exception:
+                pass  # Silently fail if image saving fails
             
             # Save to database
             if self.database_manager:
@@ -228,19 +227,58 @@ class FacialRecognitionService:
                         count=1,
                         person_name="Unknown"
                     )
-                    print(f"[FacialRecognition] 💾 Saved new person to database: {new_person_id}")
                     
                     # Initialize average for this new person
                     self.embedding_averages[new_person_id] = (embedding.copy(), 1)
-                except Exception as e:
-                    print(f"[FacialRecognition] ❌ Error saving new person to database: {e}")
-                    import traceback
-                    traceback.print_exc()
+                except Exception:
+                    pass  # Silently fail if database save fails
             
             return new_person_id
         
         # No match found and couldn't create new person
         return None
+    
+    def _update_fps(self) -> None:
+        """Update FPS calculation from recent frame timestamps."""
+        current_time = time.time()
+        self.frame_timestamps.append(current_time)
+        
+        # Keep only recent timestamps for FPS calculation
+        if len(self.frame_timestamps) > self.fps_window_size:
+            self.frame_timestamps.pop(0)
+        
+        # Calculate FPS if we have at least 2 timestamps
+        if len(self.frame_timestamps) >= 2:
+            time_span = self.frame_timestamps[-1] - self.frame_timestamps[0]
+            if time_span > 0:
+                self.current_fps = (len(self.frame_timestamps) - 1) / time_span
+            else:
+                self.current_fps = 10.0  # Default fallback
+        else:
+            self.current_fps = 10.0  # Default until we have enough data
+        
+        # Adjust history_size based on FPS (target: ~1 second of history)
+        # At 10 FPS: 10 frames = 1 second
+        # At 30 FPS: 30 frames = 1 second
+        self.history_size = max(5, min(30, int(self.current_fps)))
+    
+    def _get_person_threshold(self) -> int:
+        """Get dynamic threshold for person detection based on current FPS.
+        
+        Returns:
+            Number of frames required to detect person switch (target: 0.5s)
+        """
+        threshold = int(self.base_person_threshold * (self.current_fps / 10.0))
+        return max(3, min(threshold, self.history_size - 1))
+    
+    def _get_no_person_threshold(self) -> int:
+        """Get dynamic threshold for no-person detection based on current FPS.
+        
+        Returns:
+            Number of frames required to detect no-person switch (target: 0.7s)
+        """
+        threshold = int(self.base_no_person_threshold * (self.current_fps / 10.0))
+        return max(5, min(threshold, self.history_size - 1))
     
     def update_frame_history(self, person_id: Optional[str]) -> None:
         """Update frame history with new result.
@@ -248,9 +286,13 @@ class FacialRecognitionService:
         Args:
             person_id: Person ID from current frame (None if no person)
         """
+        # Update FPS tracking first
+        self._update_fps()
+        
+        # Update frame history
         self.frame_history.append(person_id)
         
-        # Keep only last N frames
+        # Keep only last N frames (history_size is now dynamic)
         if len(self.frame_history) > self.history_size:
             self.frame_history.pop(0)
     
@@ -258,13 +300,15 @@ class FacialRecognitionService:
         """Check if should switch from person to no person.
         
         Returns:
-            True if 9/10 of last frames show no person
+            True if threshold number of last frames show no person (target: 0.7s)
         """
-        if len(self.frame_history) < self.history_size:
+        threshold = self._get_no_person_threshold()
+        
+        if len(self.frame_history) < threshold:
             return False
         
         no_person_count = sum(1 for p in self.frame_history if p is None)
-        return no_person_count >= 9
+        return no_person_count >= threshold
     
     def should_switch_to_different_person(self, new_person_id: Optional[str]) -> bool:
         """Check if should switch to a different person.
@@ -273,16 +317,18 @@ class FacialRecognitionService:
             new_person_id: Person ID to check switching to
             
         Returns:
-            True if 7/10 of last frames show the new person
+            True if threshold number of last frames show the new person (target: 0.5s)
         """
         if new_person_id is None:
             return False
         
-        if len(self.frame_history) < self.history_size:
+        threshold = self._get_person_threshold()
+        
+        if len(self.frame_history) < threshold:
             return False
         
         new_person_count = sum(1 for p in self.frame_history if p == new_person_id)
-        return new_person_count >= 7
+        return new_person_count >= threshold
     
     def process_frame(self, image_data: bytes) -> tuple[Optional[str], bool]:
         """Process a frame and return person_id and switch status.
@@ -301,41 +347,58 @@ class FacialRecognitionService:
         # Update frame history
         self.update_frame_history(person_id)
         
-        # Debug: show current state
-        if person_id:
-            print(f"[FacialRecognition] 📊 Current person: {person_id}, History: {self.frame_history[-5:]} (last 5 frames)")
-        else:
-            print(f"[FacialRecognition] 📊 No person detected, History: {self.frame_history[-5:]} (last 5 frames)")
-        
         # Check for person switch
-        # Case 1: Switch from person to no person (9/10 instances)
+        # Case 1: Switch from person to no person (threshold-based, target: 0.7s)
         if self.current_person_id is not None and person_id is None:
             if self.should_switch_to_no_person():
                 # Save averaged embedding to database before switching away
                 self._save_averaged_embedding(self.current_person_id)
-                print(f"[FacialRecognition] Person switch detected: {self.current_person_id} -> None (no person)")
+                # Get person name for display
+                current_name = self._get_person_name(self.current_person_id) or self.current_person_id
+                print(f"[FacialRecognition] Person switch: {current_name} -> None")
                 self.current_person_id = None
                 return (None, True)  # Switch to no person detected
         
-        # Case 2: Switch to different person (7/10 instances)
+        # Case 2: Switch to different person (threshold-based, target: 0.5s)
         elif person_id is not None:
             if self.current_person_id != person_id:
                 if self.should_switch_to_different_person(person_id):
                     # Save averaged embedding for previous person before switching
                     if self.current_person_id is not None:
                         self._save_averaged_embedding(self.current_person_id)
-                    print(f"[FacialRecognition] Person switch detected: {self.current_person_id} -> {person_id}")
+                    # Get person names for display
+                    previous_name = self._get_person_name(self.current_person_id) if self.current_person_id else "None"
+                    new_name = self._get_person_name(person_id) or person_id
+                    print(f"[FacialRecognition] Person switch: {previous_name} -> {new_name}")
                     self.current_person_id = person_id
                     return (person_id, True)  # Switch to person detected
             elif self.current_person_id is None and person_id is not None:
-                # Switch from no person to person (also requires 7/10)
+                # Switch from no person to person (threshold-based, target: 0.5s)
                 if self.should_switch_to_different_person(person_id):
-                    print(f"[FacialRecognition] Person switch detected: None -> {person_id}")
+                    new_name = self._get_person_name(person_id) or person_id
+                    print(f"[FacialRecognition] Person switch: None -> {new_name}")
                     self.current_person_id = person_id
                     return (person_id, True)  # Switch to person detected
         
         # No switch detected
         return (self.current_person_id, False)
+    
+    def _get_person_name(self, person_id: Optional[str]) -> Optional[str]:
+        """Get person name from database.
+        
+        Args:
+            person_id: Person ID
+            
+        Returns:
+            Person name if found, None otherwise
+        """
+        if not person_id or not self.database_manager:
+            return None
+        
+        try:
+            return self.database_manager.get_person_name(person_id)
+        except Exception:
+            return None
     
     def _save_averaged_embedding(self, person_id: str) -> None:
         """Save the averaged embedding for a person to the database.
@@ -344,7 +407,6 @@ class FacialRecognitionService:
             person_id: Person ID to save averaged embedding for
         """
         if person_id not in self.embedding_averages:
-            print(f"[FacialRecognition] ⚠️  No averaged embedding found for {person_id}, skipping save")
             return
         
         avg_embedding, count = self.embedding_averages[person_id]
@@ -360,9 +422,6 @@ class FacialRecognitionService:
                     embedding=embedding_bytes,
                     count=count
                 )
-                print(f"[FacialRecognition] 💾 Saved averaged embedding for {person_id} (count: {count})")
-            except Exception as e:
-                print(f"[FacialRecognition] ❌ Error saving averaged embedding for {person_id}: {e}")
-                import traceback
-                traceback.print_exc()
+            except Exception:
+                pass  # Silently fail if database save fails
 
