@@ -24,6 +24,9 @@ print("[FacialRecognition] InsightFace Model Ready.")
 # Match threshold for face recognition
 MATCH_THRESHOLD = 0.2  # Cosine Similarity
 
+# Detection confidence threshold for face detection
+DETECTION_CONFIDENCE_THRESHOLD = 0.5  # Minimum confidence score for face detection
+
 
 class FacialRecognitionService:
     """Service for facial recognition with person switching logic."""
@@ -80,8 +83,17 @@ class FacialRecognitionService:
             # Detect faces and get embedding
             faces = FACE_APP.get(img)
             if faces:
+                # Check detection confidence score
+                det_score = faces[0].det_score
+                print(f"[FacialRecognition] Face detected with confidence: {det_score:.4f}")
+                
+                # Filter by confidence threshold
+                if det_score < DETECTION_CONFIDENCE_THRESHOLD:
+                    print(f"[FacialRecognition] ⚠️  Face confidence {det_score:.4f} below threshold {DETECTION_CONFIDENCE_THRESHOLD}, rejecting")
+                    return None
+                
                 embedding = faces[0].embedding
-                print(f"[FacialRecognition] ✅ Face detected! Embedding shape: {embedding.shape}, norm: {np.linalg.norm(embedding):.4f}")
+                print(f"[FacialRecognition] ✅ Face detected! det_score: {det_score:.4f}, embedding shape: {embedding.shape}, norm: {np.linalg.norm(embedding):.4f}")
                 return embedding
             else:
                 print("[FacialRecognition] ⚠️  No face detected in frame")
