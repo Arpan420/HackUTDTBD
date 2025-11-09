@@ -305,9 +305,7 @@ class DatabaseManager:
     def get_person_name(self, person_id: Optional[str]) -> Optional[str]:
         """Get person name from database.
         
-        For now, this attempts to extract a name from person_memories.
-        If no person_id is provided or no name is found, returns None.
-        In the future, this could query a dedicated persons table.
+        Queries the faces table for person_name.
         
         Args:
             person_id: Person identifier
@@ -321,36 +319,77 @@ class DatabaseManager:
         conn = self._get_connection()
         try:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                # Try to find a name in memories (look for memory_text that might contain a name)
-                # For now, we'll use a simple heuristic: if person_id looks like a name, use it
-                # Otherwise, try to find a memory that might contain the name
                 cur.execute(
                     """
-                    SELECT person_id, memory_text, created_at
-                    FROM person_memories
+                    SELECT person_name
+                    FROM faces
                     WHERE person_id = %s
-                    ORDER BY created_at DESC
-                    LIMIT 1
                     """,
                     (person_id,)
                 )
                 row = cur.fetchone()
                 
-                if row:
-                    # For now, use person_id as name if it looks like a name (not a UUID)
-                    # In production, this would query a persons table
-                    if len(person_id) < 50 and not person_id.startswith(('{', '[')):
-                        return person_id
+                if row and row.get('person_name'):
+                    return row['person_name']
                 
-                # Mock fallback: if person_id exists but no name found, return a mock name
-                # This is a placeholder until proper person management is implemented
-                return f"Person {person_id[:8]}"
+                return None
         except Exception as e:
-            # If database query fails, return mock name
             print(f"Warning: Failed to get person name: {e}")
-            if person_id and len(person_id) < 50:
-                return person_id
-            return f"Person {person_id[:8] if person_id else 'Unknown'}"
+            return None
+        finally:
+            self._return_connection(conn)
+    
+    def update_person_name(self, person_id: str, new_name: str) -> None:
+        """Update person name in faces table.
+        
+        Args:
+            person_id: Person identifier
+            new_name: New person name
+        """
+        conn = self._get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE faces
+                    SET person_name = %s
+                    WHERE person_id = %s
+                    """,
+                    (new_name, person_id)
+                )
+                conn.commit()
+                if cur.rowcount == 0:
+                    raise ValueError(f"Person with person_id {person_id} not found")
+        except Exception as e:
+            conn.rollback()
+            raise RuntimeError(f"Failed to update person name: {e}")
+        finally:
+            self._return_connection(conn)
+    
+    def update_person_name_by_name(self, person_name: str, new_name: str) -> None:
+        """Update person name in faces table by matching person_name.
+        
+        Args:
+            person_name: Current person name to match
+            new_name: New person name
+        """
+        conn = self._get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE faces
+                    SET person_name = %s
+                    WHERE person_name = %s
+                    """,
+                    (new_name, person_name)
+                )
+                conn.commit()
+                if cur.rowcount == 0:
+                    raise ValueError(f"Person with person_name {person_name} not found")
+        except Exception as e:
+            conn.rollback()
+            raise RuntimeError(f"Failed to update person name: {e}")
         finally:
             self._return_connection(conn)
     
@@ -369,7 +408,7 @@ class DatabaseManager:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute(
                     """
-                    SELECT person_id, embedding, count, socials, recap
+                    SELECT person_id, person_name, embedding, count, socials, recap
                     FROM faces
                     WHERE person_id = %s
                     """,
@@ -388,7 +427,8 @@ class DatabaseManager:
         embedding: Optional[bytes] = None,
         count: Optional[int] = None,
         socials: Optional[Dict[str, Any]] = None,
-        recap: Optional[str] = None
+        recap: Optional[str] = None,
+        person_name: Optional[str] = None
     ) -> None:
         """Create or update face record.
         
@@ -398,6 +438,7 @@ class DatabaseManager:
             count: Detection count (optional)
             socials: Social information as JSON dict (optional)
             recap: Recap text (optional)
+            person_name: Person name (optional, defaults to 'Unknown' for new records)
         """
         if recap:
             print(f"[Database] Preview update: Updating recap/preview for person {person_id}")
@@ -408,17 +449,19 @@ class DatabaseManager:
                 import json as json_lib
                 socials_json = json_lib.dumps(socials) if socials else None
                 
+                # If person_name is not provided, use 'Unknown' for new records, keep existing for updates
                 cur.execute(
                     """
-                    INSERT INTO faces (person_id, embedding, count, socials, recap)
-                    VALUES (%s, %s, %s, %s::jsonb, %s)
+                    INSERT INTO faces (person_id, person_name, embedding, count, socials, recap)
+                    VALUES (%s, COALESCE(%s, 'Unknown'), %s, %s, %s::jsonb, %s)
                     ON CONFLICT (person_id) DO UPDATE SET
                         embedding = COALESCE(EXCLUDED.embedding, faces.embedding),
                         count = COALESCE(EXCLUDED.count, faces.count),
                         socials = COALESCE(EXCLUDED.socials, faces.socials),
-                        recap = COALESCE(EXCLUDED.recap, faces.recap)
+                        recap = COALESCE(EXCLUDED.recap, faces.recap),
+                        person_name = COALESCE(EXCLUDED.person_name, faces.person_name)
                     """,
-                    (person_id, embedding, count, socials_json, recap)
+                    (person_id, person_name, embedding, count, socials_json, recap)
                 )
                 conn.commit()
                 if recap:

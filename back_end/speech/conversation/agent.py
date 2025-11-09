@@ -10,7 +10,7 @@ from langgraph.prebuilt import create_react_agent
 from langchain_nvidia_ai_endpoints import ChatNVIDIA
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
-from .tools import calendar_tool, todo_tool, notification_tool, web_search
+from .tools import calendar_tool, todo_tool, notification_tool, web_search, update_name_tool
 from .state import ConversationState
 
 # Load environment variables
@@ -54,8 +54,8 @@ class ConversationAgent:
             model=model,
         )
         
-        # Create tools list (web_search, calendar, todo, notification)
-        self.tools = [web_search, calendar_tool, todo_tool, notification_tool]
+        # Create tools list (web_search, calendar, todo, notification, update_name)
+        self.tools = [web_search, calendar_tool, todo_tool, notification_tool, update_name_tool]
         
         # Create agent graph - LangGraph will automatically handle tool calls
         try:

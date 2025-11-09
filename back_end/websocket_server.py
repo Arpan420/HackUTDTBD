@@ -532,6 +532,43 @@ class WebSocketServer:
             interaction_id = data.get("interaction_id")
             orchestrator.conversation_state.conversation_id = interaction_id
             print(f"[WebSocket] Interaction ID set to: {interaction_id}")
+        elif msg_type == "change_name":
+            person_name = data.get("person_name")
+            new_name = data.get("new_name")
+            
+            if not person_name or not new_name:
+                await websocket.send(json.dumps({
+                    "type": "error",
+                    "message": "Missing person_name or new_name parameter"
+                }))
+                return
+            
+            try:
+                if orchestrator.database_manager:
+                    orchestrator.database_manager.update_person_name_by_name(person_name, new_name)
+                    await websocket.send(json.dumps({
+                        "type": "change_name_response",
+                        "success": True,
+                        "message": f"Updated name from '{person_name}' to '{new_name}'"
+                    }))
+                    print(f"[WebSocket] Updated person name from '{person_name}' to '{new_name}'")
+                else:
+                    await websocket.send(json.dumps({
+                        "type": "error",
+                        "message": "Database manager not available"
+                    }))
+            except ValueError as e:
+                await websocket.send(json.dumps({
+                    "type": "error",
+                    "message": str(e)
+                }))
+                print(f"[WebSocket] Error updating person name: {e}")
+            except Exception as e:
+                await websocket.send(json.dumps({
+                    "type": "error",
+                    "message": f"Failed to update person name: {str(e)}"
+                }))
+                print(f"[WebSocket] Error updating person name: {e}")
         else:
             print(f"[WebSocket] Unknown control message type: {msg_type}")
     

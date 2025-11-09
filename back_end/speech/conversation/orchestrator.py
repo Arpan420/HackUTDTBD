@@ -15,6 +15,7 @@ from .agent import ConversationAgent
 from .summarizer import ConversationSummarizer
 from .database import DatabaseManager
 from .tools.notification import set_notification_callback
+from .tools.update_name import set_database_manager
 
 
 class ConversationOrchestrator:
@@ -41,6 +42,9 @@ class ConversationOrchestrator:
             except Exception as e:
                 print(f"Warning: Database not available: {e}. Continuing without database.")
                 self.database_manager = None
+        
+        # Set database manager for update_name tool
+        set_database_manager(self.database_manager)
         
         # Initialize state
         self.conversation_state = ConversationState()

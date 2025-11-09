@@ -225,7 +225,8 @@ class FacialRecognitionService:
                     self.database_manager.create_or_update_face(
                         person_id=new_person_id,
                         embedding=embedding_bytes,
-                        count=1
+                        count=1,
+                        person_name="Unknown"
                     )
                     print(f"[FacialRecognition] 💾 Saved new person to database: {new_person_id}")
                     
