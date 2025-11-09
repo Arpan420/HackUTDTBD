@@ -65,10 +65,11 @@ class ConversationOrchestrator:
         # Speech handler (will be initialized when audio stream is available)
         self.speech_handler: Optional[SpeechHandler] = None
         
-        # Face handler (Phase 2 placeholder)
+        # Face handler using real facial recognition
         self.face_handler = FaceHandler(
             on_person_detected=self._handle_person_detected,
-            on_person_lost=self._handle_person_lost
+            on_person_lost=self._handle_person_lost,
+            database_manager=self.database_manager
         )
         
         # Callbacks for WebSocket communication

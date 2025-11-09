@@ -233,7 +233,7 @@ class WebSocketServer:
                     print(f"[WebSocket] Error decoding frame: {e}, using raw data")
                     frame_data = payload
                 
-                # Process frame through facial recognition
+                # Process frame through facial recognition service (for WebSocket notifications)
                 if self.facial_recognition_service:
                     try:
                         # process_frame returns (person_id, switch_detected)
@@ -261,6 +261,16 @@ class WebSocketServer:
                             self._notify_all_clients_person_switch(person_id, person_name, recap)
                     except Exception as e:
                         print(f"[WebSocket] Error processing frame: {e}")
+                
+                # Also pass frame to all active orchestrators' face handlers
+                # This ensures the orchestrator's face handler processes frames and triggers its callbacks
+                for connection_id, conn_info in list(self.connections.items()):
+                    orchestrator = conn_info.get("orchestrator")
+                    if orchestrator and orchestrator.face_handler:
+                        try:
+                            orchestrator.face_handler.process_frame(frame_data)
+                        except Exception as e:
+                            print(f"[WebSocket] Error passing frame to orchestrator {connection_id}: {e}")
                 
         except socket.timeout:
             print("[WebSocket] ESP32 connection timeout")
