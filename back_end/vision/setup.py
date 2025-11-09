@@ -132,7 +132,7 @@ def main():
         # wifi_response = controller.execute_device_command("connectWifi:GL-SFT1200-b40|goodlife")
 
         print("\nConnecting to WiFi: ApamDaGoat...")
-        wifi_response = controller.execute_device_command("connectWifi:Adam's|adamantium")
+        wifi_response = controller.execute_device_command("connectWifi:bfjnkasdbkasvbu|adamantium")
         
         if isinstance(wifi_response, dict):
             if "error" in wifi_response:

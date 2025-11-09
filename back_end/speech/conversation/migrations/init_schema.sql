@@ -49,6 +49,7 @@ CREATE TRIGGER update_person_memories_updated_at BEFORE UPDATE ON person_memorie
 -- Stores face recognition data and person information
 CREATE TABLE IF NOT EXISTS faces (
     person_id VARCHAR(255) PRIMARY KEY,
+    person_name VARCHAR(255) DEFAULT 'Unknown',
     embedding BYTEA,
     count INTEGER DEFAULT 0,
     socials JSONB,

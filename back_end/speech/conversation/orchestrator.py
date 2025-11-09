@@ -15,6 +15,7 @@ from .agent import ConversationAgent
 from .summarizer import ConversationSummarizer
 from .database import DatabaseManager
 from .tools.notification import set_notification_callback
+from .tools.update_name import set_database_manager, set_current_person_id_getter
 
 
 class ConversationOrchestrator:
@@ -42,8 +43,15 @@ class ConversationOrchestrator:
                 print(f"Warning: Database not available: {e}. Continuing without database.")
                 self.database_manager = None
         
+        # Set database manager for update_name tool
+        set_database_manager(self.database_manager)
+        
         # Initialize state
         self.conversation_state = ConversationState()
+        
+        # Set person_id getter for update_name tool
+        # This lambda will be called by the tool to get the current person_id
+        set_current_person_id_getter(lambda: self.conversation_state.current_person_id)
         
         # Initialize components
         self.stream_coordinator = StreamCoordinator(on_event=self._handle_stream_event)
@@ -57,10 +65,11 @@ class ConversationOrchestrator:
         # Speech handler (will be initialized when audio stream is available)
         self.speech_handler: Optional[SpeechHandler] = None
         
-        # Face handler (Phase 2 placeholder)
+        # Face handler using real facial recognition
         self.face_handler = FaceHandler(
             on_person_detected=self._handle_person_detected,
-            on_person_lost=self._handle_person_lost
+            on_person_lost=self._handle_person_lost,
+            database_manager=self.database_manager
         )
         
         # Callbacks for WebSocket communication
@@ -192,12 +201,8 @@ class ConversationOrchestrator:
         """
         previous_person_id = self._previous_person_id
         
-        # If switching to "nobody", do nothing
-        if person_id is None:
-            self._previous_person_id = None
-            return
-        
         # If previous person had messages, summarize their conversation in background thread
+        # This should happen even when switching to "nobody" (person_id is None)
         if previous_person_id and self.database_manager:
             try:
                 # Filter messages for the previous person
@@ -248,8 +253,12 @@ class ConversationOrchestrator:
                 import traceback
                 traceback.print_exc()
         
-        # Update previous person ID
+        # Update previous person ID (even if switching to None/nobody)
         self._previous_person_id = person_id
+        
+        # If switching to "nobody", we're done after generating summary for previous person
+        if person_id is None:
+            return
         
         # Check if person exists in database
         person_exists = False
@@ -265,9 +274,9 @@ class ConversationOrchestrator:
                 if not person_name:
                     person_name = person_id  # Fallback to person_id as name
                 
-                # If person exists, get their recap
+                # If person exists, generate recap from all summaries
                 if person_exists:
-                    recap = self.database_manager.get_latest_summary(person_id)
+                    recap = self.summarizer.generate_recap_from_summaries(person_id)
             except Exception as e:
                 print(f"Warning: Failed to check person existence: {e}")
         

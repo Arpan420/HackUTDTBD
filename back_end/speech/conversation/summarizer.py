@@ -1,6 +1,7 @@
 """Conversation summary generation."""
 
 import json
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from typing import Dict, Any, List, Optional
 from langchain_nvidia_ai_endpoints import ChatNVIDIA
 from dotenv import load_dotenv
@@ -31,6 +32,8 @@ class ConversationSummarizer:
             max_tokens=2048
         )
         self.database_manager = database_manager
+        # Thread pool for running blocking LLM calls
+        self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="summarizer")
     
     def generate_summary(self, conversation_state: ConversationState) -> Dict[str, Any]:
         """Generate structured summary of conversation.
@@ -231,4 +234,88 @@ Return only valid JSON, no additional text."""
         except Exception as e:
             # Log error but don't fail summary generation
             print(f"Warning: Failed to save to database: {e}")
+    
+    def _generate_recap_sync(self, summaries_text: str) -> str:
+        """Synchronous helper to generate recap (runs in thread pool).
+        
+        Args:
+            summaries_text: Formatted summaries text
+            
+        Returns:
+            Generated recap text
+        """
+        prompt = f"""Create a quick, personal recap for a user about their recent conversations.
+The user is busy and needs a high-level overview of what they've been talking about with people.
+The conversation summaries are sorted from most recent to oldest.
+Make it a helpful reminder.
+
+Here are the conversation summaries:
+{summaries_text}
+
+Generate a perfect recap that is suitable to be displayed in a popup."""
+        
+        response = self.llm.invoke(prompt)
+        
+        # Extract content from response
+        if hasattr(response, "content"):
+            recap = response.content
+        else:
+            recap = str(response)
+        
+        # Clean up the recap (remove markdown code blocks if present)
+        if "```" in recap:
+            # Try to extract text from markdown
+            parts = recap.split("```")
+            if len(parts) > 1:
+                recap = parts[-1].strip()
+            else:
+                recap = recap.replace("```", "").strip()
+        
+        return recap.strip()
+    
+    def generate_recap_from_summaries(self, person_id: str) -> Optional[str]:
+        """Generate a recap from all summaries for a person.
+        
+        This method is synchronous but runs the blocking LLM call in a thread pool
+        to avoid blocking the calling thread for too long.
+        
+        Args:
+            person_id: Person identifier
+            
+        Returns:
+            Generated recap text or None if no summaries found
+        """
+        if not self.database_manager:
+            print("[Summarizer] Warning: Database manager not available, cannot generate recap")
+            return None
+        
+        try:
+            # Get all summaries for the person
+            summaries = self.database_manager.get_all_summaries(person_id)
+            
+            if not summaries:
+                print(f"[Summarizer] No summaries found for person {person_id}, cannot generate recap")
+                return None
+            
+            # Build summaries text (most recent to oldest)
+            summaries_text = "\n\n".join(
+                f"Summary {i+1}:\n{summary}" 
+                for i, summary in enumerate(summaries)
+            )
+            
+            # Run blocking LLM call in thread pool to avoid blocking the calling thread
+            future = self._executor.submit(self._generate_recap_sync, summaries_text)
+            recap = future.result(timeout=30)  # 30 second timeout
+            
+            print(f"[Summarizer] Generated recap for person {person_id} from {len(summaries)} summaries")
+            return recap
+            
+        except FutureTimeoutError:
+            print(f"[Summarizer] Warning: Recap generation timeout for person {person_id}")
+            return None
+        except Exception as e:
+            print(f"[Summarizer] Warning: Failed to generate recap for person {person_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
 
