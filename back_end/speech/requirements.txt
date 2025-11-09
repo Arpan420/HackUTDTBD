@@ -1,0 +1,28 @@
+# Speech Conversation Agent Requirements
+# Install with: pip install -r requirements.txt
+# 
+# Note: If installation is slow, try:
+#   pip install --upgrade pip
+#   pip install --only-binary :all: -r requirements.txt
+
+# Core dependencies
+langgraph
+langchain
+langchain-nvidia-ai-endpoints
+pydantic
+
+# NVIDIA Riva for speech recognition
+nvidia-riva-client
+
+# Database
+psycopg2-binary
+
+# Environment variables
+python-dotenv
+
+# Voice Activity Detection (optional - can skip if causing issues)
+# webrtcvad
+
+# Audio input (for testing)
+pyaudio
+
