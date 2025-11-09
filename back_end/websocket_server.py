@@ -118,7 +118,7 @@ class WebSocketServer:
             
             # Step 2: Connect to WiFi
             print("\n[WebSocket] Connecting to WiFi...")
-            wifi_response = self.esp32_controller.execute_device_command("connectWifi:Adam's|adamantium")
+            wifi_response = self.esp32_controller.execute_device_command("connectWifi:bfjnkasdbkasvbu|adamantium")
             
             if isinstance(wifi_response, dict):
                 if "error" in wifi_response:
