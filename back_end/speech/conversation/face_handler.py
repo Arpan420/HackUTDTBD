@@ -1,7 +1,7 @@
 """Face recognition handler (Phase 2 placeholder)."""
 
 from datetime import datetime
-from typing import Optional, Callable, Any
+from typing import Optional, Callable
 
 
 class FaceHandler:

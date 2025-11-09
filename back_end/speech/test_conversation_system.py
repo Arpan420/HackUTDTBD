@@ -11,7 +11,6 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from speech.conversation.state import ConversationState, Message
-from speech.conversation.turn_detector import TurnDetector
 from speech.conversation.database import DatabaseManager
 from speech.conversation.stream_coordinator import StreamCoordinator, EventType
 from speech.conversation.agent import ConversationAgent
@@ -44,53 +43,6 @@ class TestConversationState(unittest.TestCase):
         state.add_tool_call("test_tool", {"arg": "value"}, "result")
         self.assertEqual(len(state.tool_calls), 1)
         self.assertEqual(state.tool_calls[0]["tool"], "test_tool")
-
-
-class TestTurnDetector(unittest.TestCase):
-    """Test turn detection logic."""
-    
-    def test_turn_completion_punctuation(self):
-        """Test turn completion via punctuation."""
-        completed_utterances = []
-        
-        def on_complete(utterance, timestamp):
-            completed_utterances.append(utterance)
-        
-        detector = TurnDetector(
-            silence_threshold_seconds=2.0,
-            on_turn_complete=on_complete
-        )
-        
-        # Process speech with punctuation
-        detector.process_speech("Hello world.", datetime.now())
-        
-        # Should complete immediately due to punctuation
-        self.assertEqual(len(completed_utterances), 1)
-        self.assertEqual(completed_utterances[0], "Hello world.")
-    
-    def test_turn_completion_silence(self):
-        """Test turn completion via silence threshold."""
-        completed_utterances = []
-        
-        def on_complete(utterance, timestamp):
-            completed_utterances.append(utterance)
-        
-        detector = TurnDetector(
-            silence_threshold_seconds=0.1,  # Very short for testing
-            on_turn_complete=on_complete
-        )
-        
-        # Process speech without punctuation
-        now = datetime.now()
-        detector.process_speech("Hello world", now)
-        
-        # Wait past silence threshold
-        from datetime import timedelta
-        later = now + timedelta(seconds=0.2)
-        detector.check_silence(later)
-        
-        self.assertEqual(len(completed_utterances), 1)
-        self.assertEqual(completed_utterances[0], "Hello world")
 
 
 class TestDatabaseManager(unittest.TestCase):
@@ -286,7 +238,6 @@ class TestOrchestrator(unittest.TestCase):
         orchestrator = ConversationOrchestrator()
         
         self.assertIsNotNone(orchestrator.conversation_state)
-        self.assertIsNotNone(orchestrator.turn_detector)
         self.assertIsNotNone(orchestrator.agent)
     
     def test_turn_complete_flow(self):
@@ -319,7 +270,6 @@ def run_tests():
     
     # Add test classes
     suite.addTests(loader.loadTestsFromTestCase(TestConversationState))
-    suite.addTests(loader.loadTestsFromTestCase(TestTurnDetector))
     
     # Database tests (may be skipped if DB not available)
     try:

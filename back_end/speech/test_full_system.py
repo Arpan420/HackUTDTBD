@@ -8,7 +8,6 @@ import sys
 import os
 import time
 import argparse
-from datetime import datetime
 
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -141,10 +140,9 @@ def main():
     print("Initializing conversation orchestrator...")
     
     try:
-        # Initialize orchestrator
+        # Initialize orchestrator (Riva handles turn detection via is_final)
         orchestrator = ConversationOrchestrator(
-            silence_threshold_seconds=1.5,
-            end_silence_threshold_seconds=10.0
+            end_silence_threshold_seconds=0.5
         )
         
         # Initialize speech handler
