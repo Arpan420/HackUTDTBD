@@ -38,3 +38,7 @@ Thumbs.db
 
 # Tailwind JIT cache
 .tailwindcss-cache/
+
+# Python
+venv
+__pycache__/

@@ -8,6 +8,7 @@
 # Core dependencies
 langgraph
 langchain
+langchain-community
 langchain-nvidia-ai-endpoints
 pydantic
 
@@ -26,3 +27,5 @@ python-dotenv
 # Audio input (for testing)
 pyaudio
 
+# Web search for research agent
+tavily-python

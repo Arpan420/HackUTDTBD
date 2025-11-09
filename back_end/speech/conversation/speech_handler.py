@@ -116,8 +116,7 @@ class SpeechHandler:
     def _process_responses(self) -> None:
         """Process streaming responses in a separate thread.
         
-        Only processes final transcriptions (is_final=True) to avoid
-        sending duplicate interim results to the agent.
+        Only sends final transcriptions to the callback to avoid duplicates.
         """
         try:
             for response in self.stream:
@@ -130,9 +129,8 @@ class SpeechHandler:
                         transcript = result.alternatives[0].transcript
                         is_final = result.is_final
                         
-                        # Only process final, non-empty transcripts
-                        # Interim results are filtered out to avoid duplicates
-                        if is_final and transcript.strip():
+                        if transcript.strip() and is_final:
+                            # Final transcription - send to callback
                             timestamp = datetime.now()
                             if self.on_transcription:
                                 self.on_transcription(transcript, timestamp)

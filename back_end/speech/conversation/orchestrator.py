@@ -8,10 +8,8 @@ from typing import Optional
 from .speech_handler import SpeechHandler
 from .face_handler import FaceHandler
 from .stream_coordinator import StreamCoordinator, StreamEvent, EventType
-from .turn_detector import TurnDetector
 from .state import ConversationState
 from .agent import ConversationAgent
-from .detector import EndDetector
 from .summarizer import ConversationSummarizer
 from .database import DatabaseManager
 
@@ -21,15 +19,13 @@ class ConversationOrchestrator:
     
     def __init__(
         self,
-        silence_threshold_seconds: float = 1.5,
-        end_silence_threshold_seconds: float = 10.0,
+        end_silence_threshold_seconds: float = 2.0,
         model: str = "nvidia/nvidia-nemotron-nano-9b-v2",
         database_manager: Optional[DatabaseManager] = None
     ):
         """Initialize orchestrator.
         
         Args:
-            silence_threshold_seconds: Silence threshold for turn detection
             end_silence_threshold_seconds: Silence threshold for conversation end
             model: LLM model identifier
             database_manager: Optional database manager (creates new one if not provided)
@@ -48,15 +44,8 @@ class ConversationOrchestrator:
         
         # Initialize components
         self.stream_coordinator = StreamCoordinator(on_event=self._handle_stream_event)
-        self.turn_detector = TurnDetector(
-            silence_threshold_seconds=silence_threshold_seconds,
-            on_turn_complete=self._handle_turn_complete
-        )
+        # No turn detector needed - Riva provides is_final flag for turn detection
         self.agent = ConversationAgent(model=model)
-        self.end_detector = EndDetector(
-            silence_threshold_seconds=end_silence_threshold_seconds,
-            on_conversation_end=self._handle_conversation_end
-        )
         self.summarizer = ConversationSummarizer(
             model=model,
             database_manager=self.database_manager
@@ -100,12 +89,15 @@ class ConversationOrchestrator:
     def _handle_speech_transcription_direct(self, text: str, timestamp: datetime) -> None:
         """Direct handler for speech transcription (used by stream coordinator).
         
+        When Riva sends a final transcription (is_final=True), it means the turn is complete.
+        We immediately send it to the agent.
+        
         Args:
-            text: Transcribed text
+            text: Transcribed text (already final from Riva)
             timestamp: When speech was detected
         """
-        # Update turn detector
-        self.turn_detector.process_speech(text, timestamp)
+        # Riva already detected turn completion (is_final=True), so process immediately
+        self._handle_turn_complete(text, timestamp)
     
     def _handle_stream_event(self, event: StreamEvent) -> None:
         """Handle unified stream event.
@@ -140,11 +132,15 @@ class ConversationOrchestrator:
         # Pass to agent
         agent_response = self.agent.process_utterance(utterance, self.conversation_state)
         
-        # Add agent response to state
-        self.conversation_state.add_message("assistant", agent_response)
-        
-        print(f"User: {utterance}")
-        print(f"Agent: {agent_response}")
+        # Only add agent response to state if it's not [NO FURTHER RESPONSE]
+        # [NO FURTHER RESPONSE] is an internal signal and shouldn't be stored
+        if agent_response != "[NO FURTHER RESPONSE]":
+            self.conversation_state.add_message("assistant", agent_response)
+            print(f"User: {utterance}")
+            print(f"Agent: {agent_response}")
+        else:
+            print(f"User: {utterance}")
+            print(f"Agent: [NO FURTHER RESPONSE] (not stored in conversation history)")
     
     def _handle_person_detected(self, person_id: str, timestamp: datetime) -> None:
         """Handle person detection (Phase 2).
@@ -212,12 +208,7 @@ class ConversationOrchestrator:
         
         try:
             while self.is_running:
-                # Check for conversation end
-                current_time = datetime.now()
-                self.end_detector.check(self.conversation_state, current_time)
-                
-                # Check turn detector for silence
-                self.turn_detector.check_silence(current_time)
+                # No need to check turn detector - Riva handles turn detection via is_final
                 
                 # Small sleep to avoid busy waiting
                 time.sleep(0.1)
