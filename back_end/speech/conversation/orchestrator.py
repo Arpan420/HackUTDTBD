@@ -163,22 +163,48 @@ class ConversationOrchestrator:
             utterance: Complete user utterance
             timestamp: When turn was completed
         """
-        # Add user message to state
-        person_id = self.conversation_state.current_person_id
-        self.conversation_state.add_message("user", utterance, person_id=person_id)
+        if not utterance or not utterance.strip():
+            print("[Orchestrator] Warning: Empty utterance received")
+            return
         
-        # Pass to agent
-        agent_response = self.agent.process_utterance(utterance, self.conversation_state)
-        
-        # Only add agent response to state if it's not [NO FURTHER RESPONSE]
-        # [NO FURTHER RESPONSE] is an internal signal and shouldn't be stored
-        if agent_response != "[NO FURTHER RESPONSE]":
-            self.conversation_state.add_message("assistant", agent_response)
-            print(f"User: {utterance}")
-            print(f"Agent: {agent_response}")
-        else:
-            print(f"User: {utterance}")
-            print(f"Agent: [NO FURTHER RESPONSE] (not stored in conversation history)")
+        try:
+            # Add user message to state
+            person_id = self.conversation_state.current_person_id
+            try:
+                self.conversation_state.add_message("user", utterance, person_id=person_id)
+            except Exception as e:
+                print(f"[Orchestrator] Error adding user message to state: {e}")
+                import traceback
+                traceback.print_exc()
+                return
+            
+            # Pass to agent
+            try:
+                agent_response = self.agent.process_utterance(utterance, self.conversation_state)
+            except Exception as e:
+                print(f"[Orchestrator] Error processing utterance with agent: {e}")
+                import traceback
+                traceback.print_exc()
+                return
+            
+            # Only add agent response to state if it's not [NO FURTHER RESPONSE]
+            # [NO FURTHER RESPONSE] is an internal signal and shouldn't be stored
+            if agent_response != "[NO FURTHER RESPONSE]":
+                try:
+                    self.conversation_state.add_message("assistant", agent_response)
+                    print(f"User: {utterance}")
+                    print(f"Agent: {agent_response}")
+                except Exception as e:
+                    print(f"[Orchestrator] Error adding agent response to state: {e}")
+                    print(f"User: {utterance}")
+                    print(f"Agent: {agent_response} (not stored due to error)")
+            else:
+                print(f"User: {utterance}")
+                print(f"Agent: [NO FURTHER RESPONSE] (not stored in conversation history)")
+        except Exception as e:
+            print(f"[Orchestrator] Fatal error in _handle_turn_complete: {e}")
+            import traceback
+            traceback.print_exc()
     
     def _handle_person_detected(self, person_id: str, timestamp: datetime) -> None:
         """Handle person detection (Phase 2).
@@ -200,6 +226,7 @@ class ConversationOrchestrator:
             person_id: New person ID (or None if person lost/"nobody")
         """
         previous_person_id = self._previous_person_id
+        print(f"[Orchestrator] _handle_person_switch called: previous={previous_person_id}, new={person_id}")
         
         # If previous person had messages, summarize their conversation in background thread
         # This should happen even when switching to "nobody" (person_id is None)
@@ -211,8 +238,10 @@ class ConversationOrchestrator:
                     if msg.person_id == previous_person_id
                 ]
                 
+                print(f"[Orchestrator] Previous person {previous_person_id} had {len(previous_messages)} messages")
+                
                 if previous_messages:
-                    print(f"[Orchestrator] Queuing summary generation for {previous_person_id} (non-blocking)")
+                    print(f"[Orchestrator] ✅ Queuing summary generation for {previous_person_id} (non-blocking)")
                     
                     # Create a temporary conversation state with only previous person's messages
                     from .state import ConversationState
@@ -224,11 +253,14 @@ class ConversationOrchestrator:
                     # Run summary generation in background thread
                     def _generate_summary_async():
                         try:
+                            print(f"[Orchestrator] [Background] Starting summary generation for {previous_person_id}")
                             # Generate and save summary
                             summary_text = self.summarizer.generate_and_save_summary(
                                 temp_state,
                                 previous_person_id
                             )
+                            
+                            print(f"[Orchestrator] [Background] Summary generated: {summary_text[:100] if summary_text else 'None'}...")
                             
                             # Update faces table with recap (latest summary)
                             if summary_text:
@@ -237,21 +269,41 @@ class ConversationOrchestrator:
                                         person_id=previous_person_id,
                                         recap=summary_text
                                     )
-                                    print(f"[Orchestrator] Summary completed and recap updated for {previous_person_id}")
+                                    print(f"[Orchestrator] ✅ Summary completed and recap updated for {previous_person_id}")
                                 except Exception as e:
-                                    print(f"Warning: Failed to update face recap: {e}")
+                                    print(f"[Orchestrator] ❌ Warning: Failed to update face recap: {e}")
+                            else:
+                                print(f"[Orchestrator] ⚠️ No summary text generated for {previous_person_id}")
                         except Exception as e:
-                            print(f"Warning: Failed to generate summary in background thread: {e}")
+                            print(f"[Orchestrator] ❌ Warning: Failed to generate summary in background thread: {e}")
                             import traceback
                             traceback.print_exc()
                     
                     # Start background thread for summary generation
                     summary_thread = threading.Thread(target=_generate_summary_async, daemon=True)
                     summary_thread.start()
+                else:
+                    print(f"[Orchestrator] ⚠️ No messages to summarize for {previous_person_id}")
             except Exception as e:
-                print(f"Warning: Failed to queue summary generation: {e}")
+                print(f"[Orchestrator] ❌ Warning: Failed to queue summary generation: {e}")
                 import traceback
                 traceback.print_exc()
+        else:
+            if not previous_person_id:
+                print(f"[Orchestrator] No previous person to summarize")
+            if not self.database_manager:
+                print(f"[Orchestrator] No database manager available for summary generation")
+        
+        # Clear chat history when switching to a new person (or to None)
+        # This ensures each person gets a fresh conversation
+        message_count_before = len(self.conversation_state.messages)
+        if message_count_before > 0:
+            print(f"[Orchestrator] 🗑️ Clearing {message_count_before} messages from conversation history")
+            self.conversation_state.messages.clear()
+            self.conversation_state.tool_calls.clear()
+            print(f"[Orchestrator] ✅ Chat history cleared (now {len(self.conversation_state.messages)} messages)")
+        else:
+            print(f"[Orchestrator] No messages to clear (history already empty)")
         
         # Update previous person ID (even if switching to None/nobody)
         self._previous_person_id = person_id
@@ -267,30 +319,50 @@ class ConversationOrchestrator:
         
         if self.database_manager:
             try:
-                person_exists = self.database_manager.person_exists(person_id)
+                try:
+                    person_exists = self.database_manager.person_exists(person_id)
+                except Exception as e:
+                    print(f"[Orchestrator] Error checking person existence: {e}")
+                    person_exists = False
                 
                 # Get person name
-                person_name = self.database_manager.get_person_name(person_id)
-                if not person_name:
+                try:
+                    person_name = self.database_manager.get_person_name(person_id)
+                    if not person_name:
+                        person_name = person_id  # Fallback to person_id as name
+                except Exception as e:
+                    print(f"[Orchestrator] Error getting person name: {e}")
                     person_name = person_id  # Fallback to person_id as name
                 
                 # If person exists, generate recap from all summaries
-                if person_exists:
-                    recap = self.summarizer.generate_recap_from_summaries(person_id)
+                if person_exists and self.summarizer:
+                    try:
+                        recap = self.summarizer.generate_recap_from_summaries(person_id)
+                    except Exception as e:
+                        print(f"[Orchestrator] Error generating recap: {e}")
+                        recap = None
             except Exception as e:
-                print(f"Warning: Failed to check person existence: {e}")
+                print(f"[Orchestrator] Warning: Failed to check person existence: {e}")
+                import traceback
+                traceback.print_exc()
         
-        # If switching to new person, create new conversation thread
-        if not person_exists:
+        # If switching to new person (or to None), create new conversation thread
+        # Always create a new conversation ID when switching persons
+        try:
+            old_conversation_id = self.conversation_state.conversation_id
             self.conversation_state.conversation_id = str(uuid.uuid4())
-            print(f"[Orchestrator] Created new conversation thread for new person: {person_id}")
+            print(f"[Orchestrator] 🔄 New conversation thread: {old_conversation_id[:8]}... -> {self.conversation_state.conversation_id[:8]}... (person: {person_id})")
+        except Exception as e:
+            print(f"[Orchestrator] ❌ Error creating conversation ID: {e}")
         
         # Call person switch callback if set (includes recap as description change)
         if self.on_person_switch:
             try:
                 self.on_person_switch(person_id, person_name, recap)
             except Exception as e:
-                print(f"Error in person switch callback: {e}")
+                print(f"[Orchestrator] Error in person switch callback: {e}")
+                import traceback
+                traceback.print_exc()
     
     def _handle_person_lost(self, person_id: str, timestamp: datetime) -> None:
         """Handle person loss (Phase 2).
@@ -330,17 +402,51 @@ class ConversationOrchestrator:
         Args:
             audio_data: Raw audio bytes (16-bit PCM, mono)
         """
+        if not audio_data or len(audio_data) == 0:
+            print("[Orchestrator] Warning: Empty audio chunk received")
+            return
+        
+        if not isinstance(audio_data, bytes):
+            print(f"[Orchestrator] Warning: Non-bytes audio data received: {type(audio_data)}")
+            return
+        
         if self.speech_handler:
-            self.speech_handler.process_audio_chunk(audio_data)
+            try:
+                self.speech_handler.process_audio_chunk(audio_data)
+            except AttributeError as e:
+                print(f"[Orchestrator] Error: Speech handler missing method: {e}")
+            except Exception as e:
+                print(f"[Orchestrator] Error processing audio chunk: {e}")
+                import traceback
+                traceback.print_exc()
+        else:
+            print("[Orchestrator] Warning: Speech handler not initialized")
     
     def start(self) -> None:
         """Start the orchestrator."""
         self.is_running = True
-        self.stream_coordinator.start()
-        self.face_handler.start()
+        
+        try:
+            self.stream_coordinator.start()
+        except Exception as e:
+            print(f"[Orchestrator] Error starting stream coordinator: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        try:
+            self.face_handler.start()
+        except Exception as e:
+            print(f"[Orchestrator] Error starting face handler: {e}")
+            import traceback
+            traceback.print_exc()
         
         if self.speech_handler:
-            self.speech_handler.start_streaming()
+            try:
+                self.speech_handler.start_streaming()
+            except Exception as e:
+                print(f"[Orchestrator] Error starting speech handler: {e}")
+                import traceback
+                traceback.print_exc()
     
     def run(self) -> None:
         """Run the main event loop."""
@@ -362,19 +468,41 @@ class ConversationOrchestrator:
         self.is_running = False
         
         if self.speech_handler:
-            self.speech_handler.stop_streaming()
-            self.speech_handler.disconnect()
+            try:
+                self.speech_handler.stop_streaming()
+            except Exception as e:
+                print(f"[Orchestrator] Error stopping speech handler: {e}")
+            
+            try:
+                self.speech_handler.disconnect()
+            except Exception as e:
+                print(f"[Orchestrator] Error disconnecting speech handler: {e}")
         
-        self.stream_coordinator.stop()
-        self.face_handler.stop()
+        try:
+            self.stream_coordinator.stop()
+        except Exception as e:
+            print(f"[Orchestrator] Error stopping stream coordinator: {e}")
+        
+        try:
+            self.face_handler.stop()
+        except Exception as e:
+            print(f"[Orchestrator] Error stopping face handler: {e}")
         
         # Generate final summary if conversation had messages
         if self.conversation_state.messages and not self.summary_generated:
-            self._handle_conversation_end(self.conversation_state)
+            try:
+                self._handle_conversation_end(self.conversation_state)
+            except Exception as e:
+                print(f"[Orchestrator] Error handling conversation end: {e}")
+                import traceback
+                traceback.print_exc()
         
         # Close database connection
         if self.database_manager:
-            self.database_manager.close()
+            try:
+                self.database_manager.close()
+            except Exception as e:
+                print(f"[Orchestrator] Error closing database connection: {e}")
         
         # Note: ESP32 stream integration placeholder
         # In the future, ESP32 will maintain the current interaction ID

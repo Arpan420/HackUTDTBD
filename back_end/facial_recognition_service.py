@@ -61,6 +61,14 @@ class FacialRecognitionService:
         
         # Embedding averaging: person_id -> (averaged_embedding, count)
         self.embedding_averages: Dict[str, tuple[np.ndarray, int]] = {}
+        
+        # Cache face database to avoid reloading on every frame
+        self._face_database_cache: Optional[Dict[str, np.ndarray]] = None
+        self._face_database_cache_time: float = 0.0
+        self._face_database_cache_ttl: float = 5.0  # Reload cache every 5 seconds
+        
+        # Cache person names to avoid repeated database queries
+        self._person_name_cache: Dict[str, str] = {}
     
     def get_embedding_from_image_data(self, image_data: bytes) -> Optional[np.ndarray]:
         """Extract face embedding from image bytes.
@@ -71,68 +79,164 @@ class FacialRecognitionService:
         Returns:
             Face embedding array or None if no face found
         """
+        if not image_data or len(image_data) == 0:
+            print("[FacialRecognition] ❌ Empty image data provided")
+            return None
+        
         try:
             # Decode image from bytes
-            nparr = np.frombuffer(image_data, np.uint8)
-            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            try:
+                nparr = np.frombuffer(image_data, np.uint8)
+                if len(nparr) == 0:
+                    print("[FacialRecognition] ❌ Empty image buffer")
+                    return None
+            except (ValueError, TypeError) as e:
+                print(f"[FacialRecognition] ❌ Error creating numpy array from image data: {e}")
+                return None
+            except Exception as e:
+                print(f"[FacialRecognition] ❌ Unexpected error creating numpy array: {e}")
+                return None
+            
+            try:
+                img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            except Exception as e:
+                print(f"[FacialRecognition] ❌ Error decoding image with OpenCV: {e}")
+                return None
             
             if img is None:
                 print("[FacialRecognition] ❌ Failed to decode image")
                 return None
             
+            if img.size == 0:
+                print("[FacialRecognition] ❌ Decoded image is empty")
+                return None
+            
             # Detect faces and get embedding
-            faces = FACE_APP.get(img)
-            if faces:
-                # Check detection confidence score
-                det_score = faces[0].det_score
-                print(f"[FacialRecognition] Face detected with confidence: {det_score:.4f}")
-                
-                # Filter by confidence threshold
-                if det_score < DETECTION_CONFIDENCE_THRESHOLD:
-                    print(f"[FacialRecognition] ⚠️  Face confidence {det_score:.4f} below threshold {DETECTION_CONFIDENCE_THRESHOLD}, rejecting")
+            try:
+                faces = FACE_APP.get(img)
+            except Exception as e:
+                print(f"[FacialRecognition] ❌ Error detecting faces: {e}")
+                import traceback
+                traceback.print_exc()
+                return None
+            
+            if faces and len(faces) > 0:
+                try:
+                    # Check detection confidence score
+                    det_score = faces[0].det_score
+                    
+                    # Filter by confidence threshold
+                    if det_score < DETECTION_CONFIDENCE_THRESHOLD:
+                        return None
+                    
+                    embedding = faces[0].embedding
+                    if embedding is None or len(embedding) == 0:
+                        return None
+                    
+                    return embedding
+                except (AttributeError, IndexError) as e:
+                    print(f"[FacialRecognition] ❌ Error accessing face data: {e}")
                     return None
-                
-                embedding = faces[0].embedding
-                print(f"[FacialRecognition] ✅ Face detected! det_score: {det_score:.4f}, embedding shape: {embedding.shape}, norm: {np.linalg.norm(embedding):.4f}")
-                return embedding
+                except Exception as e:
+                    print(f"[FacialRecognition] ❌ Error processing face: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    return None
             else:
-                print("[FacialRecognition] ⚠️  No face detected in frame")
                 return None
         except Exception as e:
-            print(f"[FacialRecognition] ❌ Error extracting embedding: {e}")
+            print(f"[FacialRecognition] ❌ Unexpected error extracting embedding: {e}")
             import traceback
             traceback.print_exc()
             return None
     
-    def load_face_database_from_db(self) -> Dict[str, np.ndarray]:
-        """Load face embeddings from PostgreSQL database.
+    def load_face_database_from_db(self, force_reload: bool = False) -> Dict[str, np.ndarray]:
+        """Load face embeddings from PostgreSQL database (with caching).
+        
+        Args:
+            force_reload: If True, bypass cache and reload from database
         
         Returns:
             Dictionary mapping person_id to embedding array
         """
+        import time
+        
+        # Check cache first (unless force_reload is True)
+        current_time = time.time()
+        if not force_reload and self._face_database_cache is not None:
+            cache_age = current_time - self._face_database_cache_time
+            if cache_age < self._face_database_cache_ttl:
+                # Cache is still valid
+                return self._face_database_cache
+        
+        # Cache miss or expired - load from database
+        load_start_time = time.time()
         database = {}
         
         if not self.database_manager:
             print("[FacialRecognition] No database manager available")
             return database
         
+        conn = None
         try:
             # Get all faces from database
-            conn = self.database_manager._get_connection()
+            try:
+                conn = self.database_manager._get_connection()
+            except Exception as e:
+                print(f"[FacialRecognition] Error getting database connection: {e}")
+                return database
+            
             try:
                 with conn.cursor() as cur:
-                    cur.execute("SELECT person_id, embedding FROM faces WHERE embedding IS NOT NULL")
-                    rows = cur.fetchall()
+                    try:
+                        cur.execute("SELECT person_id, embedding FROM faces WHERE embedding IS NOT NULL")
+                    except Exception as e:
+                        print(f"[FacialRecognition] Error executing database query: {e}")
+                        return database
+                    
+                    try:
+                        rows = cur.fetchall()
+                    except Exception as e:
+                        print(f"[FacialRecognition] Error fetching database rows: {e}")
+                        return database
                     
                     for person_id, embedding_bytes in rows:
+                        if not person_id:
+                            continue
+                        
                         if embedding_bytes:
-                            # Convert bytes back to numpy array
-                            embedding = np.frombuffer(embedding_bytes, dtype=np.float32)
-                            database[person_id] = embedding
+                            try:
+                                # Convert bytes back to numpy array
+                                embedding = np.frombuffer(embedding_bytes, dtype=np.float32)
+                                if len(embedding) > 0:
+                                    database[person_id] = embedding
+                                else:
+                                    print(f"[FacialRecognition] Warning: Empty embedding for person_id {person_id}")
+                            except (ValueError, TypeError) as e:
+                                print(f"[FacialRecognition] Error converting embedding bytes for person_id {person_id}: {e}")
+                                continue
+                            except Exception as e:
+                                print(f"[FacialRecognition] Unexpected error processing embedding for person_id {person_id}: {e}")
+                                continue
             finally:
-                self.database_manager._return_connection(conn)
+                if conn:
+                    try:
+                        self.database_manager._return_connection(conn)
+                    except Exception as e:
+                        print(f"[FacialRecognition] Error returning database connection: {e}")
         except Exception as e:
             print(f"[FacialRecognition] Error loading face database: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        # Update cache
+        load_end_time = time.time()
+        load_duration = (load_end_time - load_start_time) * 1000
+        if load_duration > 100:  # Only log if slow (>100ms)
+            print(f"[FacialRecognition] load_face_database_from_db() took {load_duration:.1f}ms (loaded {len(database)} embeddings)")
+        
+        self._face_database_cache = database
+        self._face_database_cache_time = current_time
         
         return database
     
@@ -152,15 +256,41 @@ class FacialRecognitionService:
         if not database:
             return None, -1.0
         
+        if new_embedding is None or len(new_embedding) == 0:
+            print("[FacialRecognition] Warning: Empty embedding provided for matching")
+            return None, -1.0
+        
+        try:
+            new_norm = np.linalg.norm(new_embedding)
+            if new_norm == 0:
+                print("[FacialRecognition] Warning: Zero-norm embedding provided")
+                return None, -1.0
+        except Exception as e:
+            print(f"[FacialRecognition] Error calculating embedding norm: {e}")
+            return None, -1.0
+        
         for person_id, db_embedding in database.items():
-            # Calculate cosine similarity
-            score = np.dot(new_embedding, db_embedding) / (
-                np.linalg.norm(new_embedding) * np.linalg.norm(db_embedding)
-            )
+            if db_embedding is None or len(db_embedding) == 0:
+                continue
             
-            if score > best_score:
-                best_score = score
-                best_match_id = person_id
+            try:
+                # Calculate cosine similarity
+                db_norm = np.linalg.norm(db_embedding)
+                if db_norm == 0:
+                    continue
+                
+                dot_product = np.dot(new_embedding, db_embedding)
+                score = dot_product / (new_norm * db_norm)
+                
+                if score > best_score:
+                    best_score = score
+                    best_match_id = person_id
+            except (ValueError, TypeError) as e:
+                print(f"[FacialRecognition] Error calculating similarity for person_id {person_id}: {e}")
+                continue
+            except Exception as e:
+                print(f"[FacialRecognition] Unexpected error matching person_id {person_id}: {e}")
+                continue
         
         return best_match_id, float(best_score)
     
@@ -173,36 +303,66 @@ class FacialRecognitionService:
         Returns:
             person_id if recognized or newly created, None if no face detected
         """
+        if not image_data or len(image_data) == 0:
+            print("[FacialRecognition] Warning: Empty image data in recognize_person")
+            return None
+        
         # Extract embedding
-        embedding = self.get_embedding_from_image_data(image_data)
+        try:
+            embedding = self.get_embedding_from_image_data(image_data)
+        except Exception as e:
+            print(f"[FacialRecognition] Error getting embedding: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+        
         if embedding is None:
             return None
         
-        # Load database
-        database = self.load_face_database_from_db()
+        # Load database (with caching - won't reload every frame)
+        try:
+            database = self.load_face_database_from_db(force_reload=False)
+        except Exception as e:
+            print(f"[FacialRecognition] Error loading face database: {e}")
+            database = {}
         
         # Find best match
-        best_match_id, best_score = self.find_best_match(embedding, database)
+        try:
+            best_match_id, best_score = self.find_best_match(embedding, database)
+        except Exception as e:
+            print(f"[FacialRecognition] Error finding best match: {e}")
+            import traceback
+            traceback.print_exc()
+            best_match_id = None
+            best_score = -1.0
         
         # Check if match is above threshold
         if best_match_id and best_score >= MATCH_THRESHOLD:
-            # Update running average for this person
-            if best_match_id in self.embedding_averages:
-                avg_embedding, count = self.embedding_averages[best_match_id]
-                # Weighted average: new_avg = (old_avg * count + new_embedding) / (count + 1)
-                new_count = count + 1
-                new_avg = (avg_embedding * count + embedding) / new_count
-                self.embedding_averages[best_match_id] = (new_avg, new_count)
-            else:
-                # First time seeing this person in this session, initialize with current embedding
-                self.embedding_averages[best_match_id] = (embedding.copy(), 1)
+            try:
+                # Update running average for this person
+                if best_match_id in self.embedding_averages:
+                    avg_embedding, count = self.embedding_averages[best_match_id]
+                    # Weighted average: new_avg = (old_avg * count + new_embedding) / (count + 1)
+                    new_count = count + 1
+                    new_avg = (avg_embedding * count + embedding) / new_count
+                    self.embedding_averages[best_match_id] = (new_avg, new_count)
+                else:
+                    # First time seeing this person in this session, initialize with current embedding
+                    self.embedding_averages[best_match_id] = (embedding.copy(), 1)
+            except Exception as e:
+                print(f"[FacialRecognition] Error updating embedding average: {e}")
+                # Continue anyway - return the matched person_id
             
             return best_match_id
         
         # No match found - create new person entry
         if not database or best_score < MATCH_THRESHOLD:
             import uuid
-            new_person_id = f"Unnamed_{uuid.uuid4().hex[:8]}"
+            try:
+                new_person_id = f"Unnamed_{uuid.uuid4().hex[:8]}"
+            except Exception as e:
+                print(f"[FacialRecognition] Error generating UUID: {e}")
+                return None
             
             # Save image to tmp directory
             try:
@@ -211,28 +371,38 @@ class FacialRecognitionService:
                 img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
                 
                 if img is not None:
-                    # Create tmp directory in back_end
-                    back_end_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                    tmp_dir = os.path.join(back_end_dir, "tmp")
-                    os.makedirs(tmp_dir, exist_ok=True)
-                    
-                    # Create filename with timestamp and person_id
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-                    filename = f"{new_person_id}_{timestamp}.jpg"
-                    filepath = os.path.join(tmp_dir, filename)
-                    
-                    # Save image
-                    cv2.imwrite(filepath, img)
-            except Exception:
-                pass  # Silently fail if image saving fails
+                    try:
+                        # Create tmp directory in back_end
+                        back_end_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                        tmp_dir = os.path.join(back_end_dir, "tmp")
+                        os.makedirs(tmp_dir, exist_ok=True)
+                        
+                        # Create filename with timestamp and person_id
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+                        filename = f"{new_person_id}_{timestamp}.jpg"
+                        filepath = os.path.join(tmp_dir, filename)
+                        
+                        # Save image
+                        cv2.imwrite(filepath, img)
+                    except OSError as e:
+                        print(f"[FacialRecognition] Error creating tmp directory or saving image: {e}")
+                    except Exception as e:
+                        print(f"[FacialRecognition] Error saving image: {e}")
+            except Exception as e:
+                print(f"[FacialRecognition] Error decoding image for saving: {e}")
+                # Continue - image saving is optional
             
-            # Save to database
+            # Save to database (async/non-blocking - don't wait for completion)
             if self.database_manager:
                 try:
                     # Convert embedding to bytes for database storage
                     embedding_bytes = embedding.tobytes()
                     
-                    # Create face record in database
+                    # Invalidate cache so next load will get the new person
+                    self._face_database_cache = None
+                    
+                    # Create face record in database (this is still blocking, but necessary for new person)
+                    # TODO: Could make this async in the future
                     self.database_manager.create_or_update_face(
                         person_id=new_person_id,
                         embedding=embedding_bytes,
@@ -242,8 +412,9 @@ class FacialRecognitionService:
                     
                     # Initialize average for this new person
                     self.embedding_averages[new_person_id] = (embedding.copy(), 1)
-                except Exception:
-                    pass  # Silently fail if database save fails
+                except Exception as e:
+                    print(f"[FacialRecognition] Error saving new person to database: {e}")
+                    # Continue - return the new person_id anyway
             
             return new_person_id
         
@@ -353,50 +524,108 @@ class FacialRecognitionService:
             - person_id: Current person ID (None for no person)
             - switch_detected: True if person switch was detected, False otherwise
         """
-        # Recognize person in frame (auto-creates if new face detected)
-        person_id = self.recognize_person(image_data)
+        if not image_data or len(image_data) == 0:
+            print("[FacialRecognition] Warning: Empty image data in process_frame")
+            return (self.current_person_id, False)
         
-        # Update frame history
-        self.update_frame_history(person_id)
-        
-        # Check for person switch
-        # Case 1: Switch from person to no person (threshold-based, target: 0.7s)
-        if self.current_person_id is not None and person_id is None:
-            if self.should_switch_to_no_person():
-                # Save averaged embedding to database before switching away
-                self._save_averaged_embedding(self.current_person_id)
-                # Get person name for display
-                current_name = self._get_person_name(self.current_person_id) or self.current_person_id
-                print(f"[FacialRecognition] Person switch: {current_name} -> None")
-                self.current_person_id = None
-                return (None, True)  # Switch to no person detected
-        
-        # Case 2: Switch to different person (threshold-based, target: 0.5s)
-        elif person_id is not None:
-            if self.current_person_id != person_id:
-                if self.should_switch_to_different_person(person_id):
-                    # Save averaged embedding for previous person before switching
-                    if self.current_person_id is not None:
-                        self._save_averaged_embedding(self.current_person_id)
-                    # Get person names for display
-                    previous_name = self._get_person_name(self.current_person_id) if self.current_person_id else "None"
-                    new_name = self._get_person_name(person_id) or person_id
-                    print(f"[FacialRecognition] Person switch: {previous_name} -> {new_name}")
-                    self.current_person_id = person_id
-                    return (person_id, True)  # Switch to person detected
-            elif self.current_person_id is None and person_id is not None:
-                # Switch from no person to person (threshold-based, target: 0.5s)
-                if self.should_switch_to_different_person(person_id):
-                    new_name = self._get_person_name(person_id) or person_id
-                    print(f"[FacialRecognition] Person switch: None -> {new_name}")
-                    self.current_person_id = person_id
-                    return (person_id, True)  # Switch to person detected
-        
-        # No switch detected
-        return (self.current_person_id, False)
+        try:
+            # Recognize person in frame (auto-creates if new face detected)
+            try:
+                person_id = self.recognize_person(image_data)
+            except Exception as e:
+                print(f"[FacialRecognition] Error recognizing person: {e}")
+                import traceback
+                traceback.print_exc()
+                return (self.current_person_id, False)
+            
+            # Update frame history
+            try:
+                self.update_frame_history(person_id)
+            except Exception as e:
+                print(f"[FacialRecognition] Error updating frame history: {e}")
+                # Continue - history update failure shouldn't stop processing
+            
+            # Check for person switch
+            try:
+                # Case 1: Switch from person to no person (threshold-based, target: 0.7s)
+                if self.current_person_id is not None and person_id is None:
+                    try:
+                        if self.should_switch_to_no_person():
+                            # Save averaged embedding to database before switching away
+                            try:
+                                self._save_averaged_embedding(self.current_person_id)
+                            except Exception as e:
+                                print(f"[FacialRecognition] Error saving averaged embedding: {e}")
+                            
+                            # Get person name for display
+                            try:
+                                current_name = self._get_person_name(self.current_person_id) or self.current_person_id
+                            except Exception:
+                                current_name = self.current_person_id
+                            
+                            # Person switch: {current_name} -> None
+                            self.current_person_id = None
+                            return (None, True)  # Switch to no person detected
+                    except Exception as e:
+                        print(f"[FacialRecognition] Error checking switch to no person: {e}")
+                
+                # Case 2: Switch to different person (threshold-based, target: 0.5s)
+                elif person_id is not None:
+                    if self.current_person_id != person_id:
+                        try:
+                            if self.should_switch_to_different_person(person_id):
+                                # Save averaged embedding for previous person before switching
+                                if self.current_person_id is not None:
+                                    try:
+                                        self._save_averaged_embedding(self.current_person_id)
+                                    except Exception as e:
+                                        print(f"[FacialRecognition] Error saving averaged embedding: {e}")
+                                
+                                # Get person names for display
+                                try:
+                                    previous_name = self._get_person_name(self.current_person_id) if self.current_person_id else "None"
+                                except Exception:
+                                    previous_name = self.current_person_id or "None"
+                                
+                                try:
+                                    new_name = self._get_person_name(person_id) or person_id
+                                except Exception:
+                                    new_name = person_id
+                                
+                                # Person switch: {previous_name} -> {new_name}
+                                self.current_person_id = person_id
+                                return (person_id, True)  # Switch to person detected
+                        except Exception as e:
+                            print(f"[FacialRecognition] Error checking switch to different person: {e}")
+                    elif self.current_person_id is None and person_id is not None:
+                        # Switch from no person to person (threshold-based, target: 0.5s)
+                        try:
+                            if self.should_switch_to_different_person(person_id):
+                                try:
+                                    new_name = self._get_person_name(person_id) or person_id
+                                except Exception:
+                                    new_name = person_id
+                                
+                                # Person switch: None -> {new_name}
+                                self.current_person_id = person_id
+                                return (person_id, True)  # Switch to person detected
+                        except Exception as e:
+                            print(f"[FacialRecognition] Error checking switch from no person: {e}")
+            except Exception as e:
+                print(f"[FacialRecognition] Error in person switch logic: {e}")
+                import traceback
+                traceback.print_exc()
+            
+            # No switch detected
+            return (self.current_person_id, False)
+        except Exception as e:
+            print(f"[FacialRecognition] Fatal error in process_frame: {e}")
+            import traceback
+            traceback.print_exc()
+            return (self.current_person_id, False)
     
     def _get_person_name(self, person_id: Optional[str]) -> Optional[str]:
-        """Get person name from database.
+        """Get person name from database (with caching).
         
         Args:
             person_id: Person ID
@@ -407,10 +636,30 @@ class FacialRecognitionService:
         if not person_id or not self.database_manager:
             return None
         
+        # Check cache first
+        if person_id in self._person_name_cache:
+            return self._person_name_cache[person_id]
+        
+        # Cache miss - query database
         try:
-            return self.database_manager.get_person_name(person_id)
+            person_name = self.database_manager.get_person_name(person_id)
+            if person_name:
+                # Cache the result
+                self._person_name_cache[person_id] = person_name
+            return person_name
         except Exception:
             return None
+    
+    def invalidate_person_name_cache(self, person_id: Optional[str] = None) -> None:
+        """Invalidate person name cache.
+        
+        Args:
+            person_id: Specific person ID to invalidate, or None to clear all
+        """
+        if person_id:
+            self._person_name_cache.pop(person_id, None)
+        else:
+            self._person_name_cache.clear()
     
     def _save_averaged_embedding(self, person_id: str) -> None:
         """Save the averaged embedding for a person to the database.
@@ -418,15 +667,30 @@ class FacialRecognitionService:
         Args:
             person_id: Person ID to save averaged embedding for
         """
+        if not person_id:
+            return
+        
         if person_id not in self.embedding_averages:
             return
         
-        avg_embedding, count = self.embedding_averages[person_id]
+        try:
+            avg_embedding, count = self.embedding_averages[person_id]
+        except (KeyError, ValueError) as e:
+            print(f"[FacialRecognition] Error accessing embedding average: {e}")
+            return
+        
+        if avg_embedding is None or len(avg_embedding) == 0:
+            print(f"[FacialRecognition] Warning: Empty embedding for person_id {person_id}")
+            return
         
         if self.database_manager:
             try:
                 # Convert averaged embedding to bytes
                 embedding_bytes = avg_embedding.tobytes()
+                
+                if not embedding_bytes or len(embedding_bytes) == 0:
+                    print(f"[FacialRecognition] Warning: Empty embedding bytes for person_id {person_id}")
+                    return
                 
                 # Update face record in database with averaged embedding
                 self.database_manager.create_or_update_face(
@@ -434,6 +698,8 @@ class FacialRecognitionService:
                     embedding=embedding_bytes,
                     count=count
                 )
-            except Exception:
-                pass  # Silently fail if database save fails
+            except Exception as e:
+                print(f"[FacialRecognition] Error saving averaged embedding to database: {e}")
+                import traceback
+                traceback.print_exc()
 

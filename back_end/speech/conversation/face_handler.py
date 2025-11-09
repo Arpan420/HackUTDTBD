@@ -66,28 +66,64 @@ class FaceHandler:
         if not self.is_active:
             return None
         
+        if not frame_data or len(frame_data) == 0:
+            return None
+        
+        if not isinstance(frame_data, bytes):
+            return None
+        
+        if not self.facial_recognition_service:
+            return None
+        
         try:
             # Process frame through facial recognition service
             # Returns (person_id, switch_detected)
-            person_id, switch_detected = self.facial_recognition_service.process_frame(frame_data)
+            try:
+                person_id, switch_detected = self.facial_recognition_service.process_frame(frame_data)
+            except AttributeError as e:
+                print(f"[FaceHandler] Error: Facial recognition service missing method: {e}")
+                return None
+            except Exception as e:
+                print(f"[FaceHandler] Error in facial recognition service: {e}")
+                import traceback
+                traceback.print_exc()
+                return None
             
             if switch_detected:
-                timestamp = datetime.now()
+                try:
+                    timestamp = datetime.now()
+                except Exception as e:
+                    timestamp = datetime.now()  # Fallback
                 
                 # Handle person switch callbacks
                 if person_id is not None:
                     # Person detected or switched to different person
                     if self.on_person_detected:
-                        self.on_person_detected(person_id, timestamp)
+                        try:
+                            self.on_person_detected(person_id, timestamp)
+                        except Exception as e:
+                            print(f"[FaceHandler] Error in on_person_detected callback: {e}")
+                            import traceback
+                            traceback.print_exc()
                     
                     # If we had a previous person and switched to a new one, notify about previous person lost
                     if self._previous_person_id is not None and self._previous_person_id != person_id:
                         if self.on_person_lost:
-                            self.on_person_lost(self._previous_person_id, timestamp)
+                            try:
+                                self.on_person_lost(self._previous_person_id, timestamp)
+                            except Exception as e:
+                                print(f"[FaceHandler] Error in on_person_lost callback: {e}")
+                                import traceback
+                                traceback.print_exc()
                 else:
                     # Person lost (switched to no person)
                     if self._previous_person_id is not None and self.on_person_lost:
-                        self.on_person_lost(self._previous_person_id, timestamp)
+                        try:
+                            self.on_person_lost(self._previous_person_id, timestamp)
+                        except Exception as e:
+                            print(f"[FaceHandler] Error in on_person_lost callback: {e}")
+                            import traceback
+                            traceback.print_exc()
                 
                 # Update previous person ID
                 self._previous_person_id = person_id
@@ -98,7 +134,7 @@ class FaceHandler:
             return person_id if person_id else None
             
         except Exception as e:
-            print(f"[FaceHandler] Error processing frame: {e}")
+            print(f"[FaceHandler] Fatal error processing frame: {e}")
             import traceback
             traceback.print_exc()
             return None

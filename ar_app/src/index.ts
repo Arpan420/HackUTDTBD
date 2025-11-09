@@ -178,19 +178,53 @@ class ExampleMentraOSApp extends AppServer {
 
     // Set up WebSocket message handlers
     wsClient.onMessage((message) => {
-      if (message.type === "notification") {
-        const notifMsg = message as NotificationMessage;
-        console.log(`[Notification] ${notifMsg.title}: ${notifMsg.message}`);
-        addNotification(notifMsg.title, notifMsg.message);
-      } else if (message.type === "switch_interaction_person") {
-        const personMsg = message as PersonSwitchMessage;
-        console.log(
-          `[Person Switch] ${personMsg.person_name} (${personMsg.person_id})`
-        );
-        currentPersonName = personMsg.person_name;
-        // Use recap as description, fallback to blurb if no recap
-        currentPersonDescription = personMsg.recap || personMsg.blurb || null;
-        updateDisplay();
+      try {
+        if (!message || !message.type) {
+          console.warn("[AR App] Received message without type");
+          return;
+        }
+
+        if (message.type === "notification") {
+          try {
+            const notifMsg = message as NotificationMessage;
+            if (!notifMsg.title || !notifMsg.message) {
+              console.warn("[AR App] Invalid notification message format");
+              return;
+            }
+            console.log(
+              `[Notification] ${notifMsg.title}: ${notifMsg.message}`
+            );
+            addNotification(notifMsg.title, notifMsg.message);
+          } catch (error) {
+            console.error("[AR App] Error handling notification:", error);
+          }
+        } else if (message.type === "switch_interaction_person") {
+          try {
+            const personMsg = message as PersonSwitchMessage;
+            if (!personMsg.person_name) {
+              console.warn("[AR App] Invalid person switch message format");
+              return;
+            }
+            console.log(
+              `[Person Switch] ${personMsg.person_name} (${personMsg.person_id})`
+            );
+            currentPersonName = personMsg.person_name;
+            // Use recap as description, fallback to blurb if no recap
+            currentPersonDescription =
+              personMsg.recap || personMsg.blurb || null;
+            try {
+              updateDisplay();
+            } catch (error) {
+              console.error("[AR App] Error updating display:", error);
+            }
+          } catch (error) {
+            console.error("[AR App] Error handling person switch:", error);
+          }
+        } else {
+          console.warn(`[AR App] Unknown message type: ${message.type}`);
+        }
+      } catch (error) {
+        console.error("[AR App] Error in message handler:", error);
       }
     });
 
@@ -202,18 +236,35 @@ class ExampleMentraOSApp extends AppServer {
 
     // Listen for audio chunks
     session.events.onAudioChunk((data) => {
-      // AudioChunk interface: { type: StreamType.AUDIO_CHUNK, arrayBuffer: ArrayBufferLike, sampleRate?: number }
-      if (data.arrayBuffer) {
-        // Forward audio chunk to backend via WebSocket
-        // The arrayBuffer is ArrayBufferLike (can be ArrayBuffer, SharedArrayBuffer, etc.)
-        wsClient.sendAudioChunk(data.arrayBuffer);
-
-        // Optional: log sample rate if available
-        if (data.sampleRate) {
-          console.log(`[AudioChunk] Sample rate: ${data.sampleRate}Hz`);
+      try {
+        // AudioChunk interface: { type: StreamType.AUDIO_CHUNK, arrayBuffer: ArrayBufferLike, sampleRate?: number }
+        if (!data) {
+          console.warn("[AudioChunk] Received null/undefined data");
+          return;
         }
-      } else {
-        console.warn("[AudioChunk] Received audio chunk without arrayBuffer");
+
+        if (data.arrayBuffer) {
+          try {
+            // Forward audio chunk to backend via WebSocket
+            // The arrayBuffer is ArrayBufferLike (can be ArrayBuffer, SharedArrayBuffer, etc.)
+            wsClient.sendAudioChunk(data.arrayBuffer);
+          } catch (error) {
+            console.error("[AudioChunk] Error sending audio chunk:", error);
+          }
+
+          // Optional: log sample rate if available
+          if (data.sampleRate) {
+            try {
+              console.log(`[AudioChunk] Sample rate: ${data.sampleRate}Hz`);
+            } catch (error) {
+              // Ignore logging errors
+            }
+          }
+        } else {
+          console.warn("[AudioChunk] Received audio chunk without arrayBuffer");
+        }
+      } catch (error) {
+        console.error("[AudioChunk] Error processing audio chunk:", error);
       }
     });
 

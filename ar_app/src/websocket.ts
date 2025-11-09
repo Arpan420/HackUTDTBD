@@ -63,14 +63,26 @@ export class BackendWebSocketClient {
 
       this.ws.onmessage = (event) => {
         try {
+          if (!event || !event.data) {
+            console.warn("[WebSocket] Received empty message");
+            return;
+          }
+
           if (typeof event.data === "string") {
-            const message: WebSocketMessage = JSON.parse(event.data);
-            this.handleMessage(message);
+            try {
+              const message: WebSocketMessage = JSON.parse(event.data);
+              this.handleMessage(message);
+            } catch (parseError) {
+              console.error(
+                "[WebSocket] Error parsing JSON message:",
+                parseError
+              );
+            }
           } else {
             console.warn("[WebSocket] Received non-text message");
           }
         } catch (error) {
-          console.error("[WebSocket] Error parsing message:", error);
+          console.error("[WebSocket] Error handling message:", error);
         }
       };
 
@@ -111,46 +123,68 @@ export class BackendWebSocketClient {
    * @param audioData - ArrayBufferLike (ArrayBuffer, SharedArrayBuffer, or typed array buffer)
    */
   sendAudioChunk(audioData: ArrayBufferLike): void {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      console.warn("[WebSocket] Cannot send audio chunk - not connected");
+      return;
+    }
+
+    if (!audioData) {
+      console.warn("[WebSocket] Cannot send audio chunk - empty data");
+      return;
+    }
+
+    try {
       // WebSocket.send() accepts ArrayBuffer, so we ensure it's an ArrayBuffer
       // If it's already an ArrayBuffer, use it directly
       // If it's a typed array view, we need to get the underlying buffer
       let buffer: ArrayBuffer;
 
-      if (audioData instanceof ArrayBuffer) {
-        buffer = audioData;
-      } else if (audioData instanceof SharedArrayBuffer) {
-        // Convert SharedArrayBuffer to ArrayBuffer (WebSocket doesn't support SharedArrayBuffer)
-        buffer = audioData.slice(0);
-      } else if (
-        audioData &&
-        typeof audioData === "object" &&
-        "buffer" in audioData &&
-        "byteOffset" in audioData &&
-        "byteLength" in audioData
-      ) {
-        // It's a typed array view (Int8Array, Int16Array, Uint8Array, etc.)
-        // Get the underlying ArrayBuffer
-        const typedArray = audioData as {
-          buffer: ArrayBuffer;
-          byteOffset: number;
-          byteLength: number;
-        };
-        buffer = typedArray.buffer.slice(
-          typedArray.byteOffset,
-          typedArray.byteOffset + typedArray.byteLength
+      try {
+        if (audioData instanceof ArrayBuffer) {
+          buffer = audioData;
+        } else if (audioData instanceof SharedArrayBuffer) {
+          // Convert SharedArrayBuffer to ArrayBuffer (WebSocket doesn't support SharedArrayBuffer)
+          buffer = audioData.slice(0);
+        } else if (
+          audioData &&
+          typeof audioData === "object" &&
+          "buffer" in audioData &&
+          "byteOffset" in audioData &&
+          "byteLength" in audioData
+        ) {
+          // It's a typed array view (Int8Array, Int16Array, Uint8Array, etc.)
+          // Get the underlying ArrayBuffer
+          const typedArray = audioData as {
+            buffer: ArrayBuffer;
+            byteOffset: number;
+            byteLength: number;
+          };
+          buffer = typedArray.buffer.slice(
+            typedArray.byteOffset,
+            typedArray.byteOffset + typedArray.byteLength
+          );
+        } else {
+          // Fallback: try to convert to ArrayBuffer
+          console.warn(
+            "[WebSocket] Unknown audio data type, attempting conversion"
+          );
+          buffer = new Uint8Array(audioData as any).buffer;
+        }
+      } catch (error) {
+        console.error(
+          "[WebSocket] Error converting audio data to buffer:",
+          error
         );
-      } else {
-        // Fallback: try to convert to ArrayBuffer
-        console.warn(
-          "[WebSocket] Unknown audio data type, attempting conversion"
-        );
-        buffer = new Uint8Array(audioData as any).buffer;
+        return;
       }
 
-      this.ws.send(buffer);
-    } else {
-      console.warn("[WebSocket] Cannot send audio chunk - not connected");
+      try {
+        this.ws.send(buffer);
+      } catch (error) {
+        console.error("[WebSocket] Error sending audio chunk:", error);
+      }
+    } catch (error) {
+      console.error("[WebSocket] Unexpected error in sendAudioChunk:", error);
     }
   }
 
@@ -158,10 +192,21 @@ export class BackendWebSocketClient {
    * Send control message to the backend
    */
   sendControlMessage(message: WebSocketMessage): void {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(message));
-    } else {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       console.warn("[WebSocket] Cannot send control message - not connected");
+      return;
+    }
+
+    if (!message) {
+      console.warn("[WebSocket] Cannot send control message - empty message");
+      return;
+    }
+
+    try {
+      const jsonString = JSON.stringify(message);
+      this.ws.send(jsonString);
+    } catch (error) {
+      console.error("[WebSocket] Error sending control message:", error);
     }
   }
 

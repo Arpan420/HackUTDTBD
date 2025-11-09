@@ -85,70 +85,146 @@ class ConversationAgent:
         Returns:
             Agent's response text (or [NO FURTHER RESPONSE])
         """
+        if not utterance or not utterance.strip():
+            print("[Agent] Warning: Empty utterance received")
+            return "[NO FURTHER RESPONSE]"
+        
+        if not conversation_state:
+            print("[Agent] Error: Conversation state not provided")
+            return "[NO FURTHER RESPONSE]"
+        
         # Log human message
         print(f"[HUMAN] {utterance}")
         
         # Build message history from conversation state
-        messages = [SystemMessage(content=get_system_prompt())]
+        try:
+            system_prompt = get_system_prompt()
+            messages = [SystemMessage(content=system_prompt)]
+        except Exception as e:
+            print(f"[Agent] Error getting system prompt: {e}")
+            import traceback
+            traceback.print_exc()
+            return "[NO FURTHER RESPONSE]"
         
-        for msg in conversation_state.messages:
-            if msg.role == "user":
-                messages.append(HumanMessage(content=msg.content))
-            elif msg.role == "assistant":
-                messages.append(AIMessage(content=msg.content))
+        try:
+            for msg in conversation_state.messages:
+                if not msg:
+                    continue
+                if msg.role == "user":
+                    messages.append(HumanMessage(content=msg.content))
+                elif msg.role == "assistant":
+                    messages.append(AIMessage(content=msg.content))
+        except (AttributeError, TypeError) as e:
+            print(f"[Agent] Error building message history: {e}")
+            import traceback
+            traceback.print_exc()
+            return "[NO FURTHER RESPONSE]"
         
         # Add current user utterance
-        messages.append(HumanMessage(content=utterance))
+        try:
+            messages.append(HumanMessage(content=utterance))
+        except Exception as e:
+            print(f"[Agent] Error creating human message: {e}")
+            return "[NO FURTHER RESPONSE]"
         
         # Invoke agent - LangGraph automatically handles tool calls
         try:
+            if not self.agent:
+                print("[Agent] Error: Agent not initialized")
+                return "[NO FURTHER RESPONSE]"
+            
             response = self.agent.invoke({"messages": messages})
             
             # Extract information from response
             agent_response = ""
             tool_was_called = False
-            agent_reasoning = ""
+            
+            if not response:
+                print("[Agent] Warning: Empty response from agent")
+                return "[NO FURTHER RESPONSE]"
             
             if isinstance(response, dict) and "messages" in response:
-                # Track tool calls first
-                for msg in response["messages"]:
-                    if hasattr(msg, "tool_calls") and msg.tool_calls:
-                        tool_was_called = True
-                        for tool_call in msg.tool_calls:
-                            if isinstance(tool_call, dict):
-                                tool_name = tool_call.get("name", "unknown")
-                                tool_args = tool_call.get("args", {})
-                            else:
-                                tool_name = getattr(tool_call, "name", "unknown")
-                                tool_args = getattr(tool_call, "args", {})
-                            
-                            # Full tool call logging
-                            print(f"[TOOL CALL] {tool_name}({tool_args})")
-                            conversation_state.add_tool_call(
-                                tool_name=tool_name,
-                                args=tool_args,
-                                result="executed"
-                            )
+                try:
+                    # Track tool calls first
+                    for msg in response["messages"]:
+                        if not msg:
+                            continue
+                        try:
+                            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                                tool_was_called = True
+                                for tool_call in msg.tool_calls:
+                                    try:
+                                        if isinstance(tool_call, dict):
+                                            tool_name = tool_call.get("name", "unknown")
+                                            tool_args = tool_call.get("args", {})
+                                        else:
+                                            tool_name = getattr(tool_call, "name", "unknown")
+                                            tool_args = getattr(tool_call, "args", {})
+                                        
+                                        # Full tool call logging
+                                        print(f"[TOOL CALL] {tool_name}({tool_args})")
+                                        
+                                        try:
+                                            conversation_state.add_tool_call(
+                                                tool_name=tool_name,
+                                                args=tool_args,
+                                                result="executed"
+                                            )
+                                        except Exception as e:
+                                            print(f"[Agent] Error adding tool call to state: {e}")
+                                    except Exception as e:
+                                        print(f"[Agent] Error processing tool call: {e}")
+                                        continue
+                        except AttributeError as e:
+                            print(f"[Agent] Error accessing message attributes: {e}")
+                            continue
+                except (TypeError, KeyError) as e:
+                    print(f"[Agent] Error processing response messages: {e}")
+                    import traceback
+                    traceback.print_exc()
                 
-                # Log only the FINAL agent reasoning (last AIMessage with content, no tool calls)
-                for msg in reversed(response["messages"]):
-                    if isinstance(msg, AIMessage) and hasattr(msg, "content") and msg.content:
-                        # Only log if this is a final reasoning (no tool calls in this message)
-                        if not (hasattr(msg, "tool_calls") and msg.tool_calls):
-                            reasoning = msg.content.strip()
-                            if reasoning and reasoning not in ["None", "null", ""]:
-                                print(f"[AGENT REASONING] {reasoning}")
-                                break  # Only log the last one
+                try:
+                    # Log only the FINAL agent reasoning (last AIMessage with content, no tool calls)
+                    for msg in reversed(response["messages"]):
+                        if not msg:
+                            continue
+                        try:
+                            if isinstance(msg, AIMessage) and hasattr(msg, "content") and msg.content:
+                                # Only log if this is a final reasoning (no tool calls in this message)
+                                if not (hasattr(msg, "tool_calls") and msg.tool_calls):
+                                    reasoning = msg.content.strip()
+                                    if reasoning and reasoning not in ["None", "null", ""]:
+                                        print(f"[AGENT REASONING] {reasoning}")
+                                        break  # Only log the last one
+                        except (AttributeError, TypeError) as e:
+                            continue
+                except Exception as e:
+                    print(f"[Agent] Error extracting agent reasoning: {e}")
                 
-                # Find final agent response (last AIMessage with content)
-                for msg in reversed(response["messages"]):
-                    if isinstance(msg, AIMessage) and hasattr(msg, "content") and msg.content:
-                        agent_response = msg.content
-                        break
-                
-                if not agent_response:
-                    last_msg = response["messages"][-1]
-                    agent_response = str(last_msg) if last_msg else ""
+                try:
+                    # Find final agent response (last AIMessage with content)
+                    for msg in reversed(response["messages"]):
+                        if not msg:
+                            continue
+                        try:
+                            if isinstance(msg, AIMessage) and hasattr(msg, "content") and msg.content:
+                                agent_response = msg.content
+                                break
+                        except (AttributeError, TypeError):
+                            continue
+                    
+                    if not agent_response and response["messages"]:
+                        try:
+                            last_msg = response["messages"][-1]
+                            agent_response = str(last_msg) if last_msg else ""
+                        except Exception as e:
+                            print(f"[Agent] Error extracting last message: {e}")
+                except (KeyError, TypeError) as e:
+                    print(f"[Agent] Error finding agent response: {e}")
+                    import traceback
+                    traceback.print_exc()
+            else:
+                print(f"[Agent] Warning: Unexpected response format: {type(response)}")
             
             # If tool was called (especially notification_tool with return_direct), return empty
             if tool_was_called:
@@ -160,6 +236,18 @@ class ConversationAgent:
             
             return "[NO FURTHER RESPONSE]"
             
+        except (AttributeError, TypeError) as e:
+            error_msg = f"Error in agent processing (attribute/type error): {str(e)}"
+            print(f"[MAIN AGENT ERROR] {error_msg}")
+            import traceback
+            traceback.print_exc()
+            return "[NO FURTHER RESPONSE]"
+        except KeyError as e:
+            error_msg = f"Error in agent processing (key error): {str(e)}"
+            print(f"[MAIN AGENT ERROR] {error_msg}")
+            import traceback
+            traceback.print_exc()
+            return "[NO FURTHER RESPONSE]"
         except Exception as e:
             error_msg = f"Error in agent processing: {str(e)}"
             print(f"[MAIN AGENT ERROR] {error_msg}")
