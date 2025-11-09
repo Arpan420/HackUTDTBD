@@ -1,3 +1,6 @@
 @import "tailwindcss"; 
 
 html, body, #root { height: 100%; }
+
+* { -webkit-tap-highlight-color: rgba(0, 0, 0, 0.08); }
+

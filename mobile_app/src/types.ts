@@ -10,7 +10,7 @@ export type Interaction = {
     when: string; // ISO timestamp
     location?: string;
     notes?: string; // quick notes
-    summaryId: string; // links to summary 
+    summaryId?: string; // links to summary 
 }
 
 export type Person = {
@@ -18,6 +18,7 @@ export type Person = {
     Name: string;
     lastSeen?: string; 
     phoneNumber?: string;
+    notes?: string;
     summaries: Summary[];
     interactions: Interaction[];
 }

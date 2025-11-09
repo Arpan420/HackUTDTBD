@@ -1,102 +1,86 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import dayjs from "dayjs";
 import type { Person, Summary, Interaction } from "../types";
 
 type State = {
   people: Person[];
-
-  // mutations
-  addPerson: (p: Pick<Person, "Name" | "phoneNumber">) => string;
-  addSummary: (personId: string, s: Pick<Summary, "text" | "sources">) => string;
-  addInteraction: (
-    personId: string,
-    i: Omit<Interaction, "id" | "when">
-  ) => string;
-
-  upsertPersonBasics: (personId: string, patch: Partial<Pick<Person, "Name" | "phoneNumber" | "lastSeen">>) => void;
+  addPerson: (p: { Name: string; phoneNumber?: string }) => void;
+  updatePerson: (id: string, patch: Partial<Person>) => void; // ← NEW
+  addSummary: (personId: string, s: Omit<Summary, "id" | "createdAt"> &
+                                 { text: string }) => void;   // ← NEW
+  addInteraction: (personId: string,
+                   i: Omit<Interaction, "id">) => void;       // ← NEW
 };
 
-const sample: Person[] = [
-  {
-    id: "p1",
-    Name: "Sarah Patel",
-    phoneNumber: "555-123-9876",
-    lastSeen: dayjs().subtract(1, "day").toISOString(),
-    summaries: [
-      {
-        id: "s1",
-        text: "Discussed a project meeting; Sarah is free after 3 PM tomorrow.",
-        createdAt: dayjs().subtract(1, "day").toISOString(),
-      },
-    ],
-    interactions: [
-      {
-        id: "i1",
-        when: dayjs().subtract(1, "day").toISOString(),
-        location: "Library",
-        notes: "Quick chat about timelines.",
-        summaryId: "s1",
-      },
-    ],
-  },
-];
+const uid = () => Math.random().toString(36).slice(2);
 
 export const usePeopleStore = create<State>()(
   persist(
     (set) => ({
-      people: sample,
+      people: [],
 
-      addPerson: ({ Name, phoneNumber }) => {
-        const id = crypto.randomUUID();
-        const person: Person = {
-          id,
-          Name,
-          phoneNumber,
-          summaries: [],
-          interactions: [],
-        };
-        set((s) => ({ people: [person, ...s.people] }));
-        return id;
-      },
+      addPerson: (p) =>
+        set((s) => ({
+          people: [
+            ...s.people,
+            {
+              id: uid(),
+              Name: p.Name,
+              phoneNumber: p.phoneNumber,
+              summaries: [],
+              interactions: [],
+            },
+          ],
+        })),
 
-      addSummary: (personId, s) => {
-        const id = crypto.randomUUID();
-        const createdAt = new Date().toISOString();
-        set((state) => ({
-          people: state.people.map((p) =>
-            p.id === personId
-              ? { ...p, summaries: [{ id, createdAt, ...s }, ...p.summaries] }
-              : p
+      updatePerson: (id, patch) =>
+        set((s) => ({
+          people: s.people.map((p) =>
+            p.id === id ? { ...p, ...patch } : p
           ),
-        }));
-        return id;
-      },
+        })),
 
-      addInteraction: (personId, i) => {
-        const id = crypto.randomUUID();
-        const when = new Date().toISOString();
-        set((state) => ({
-          people: state.people.map((p) =>
-            p.id === personId
-              ? {
+      addSummary: (personId, s0) =>
+        set((s) => ({
+          people: s.people.map((p) =>
+            p.id !== personId
+              ? p
+              : {
                   ...p,
-                  interactions: [{ id, when, ...i }, ...p.interactions],
-                  lastSeen: when,
+                  summaries: [
+                    {
+                      id: uid(),
+                      text: s0.text,
+                      createdAt: new Date().toISOString(),
+                      sources: s0.sources,
+                    },
+                    ...p.summaries,
+                  ],
                 }
-              : p
           ),
-        }));
-        return id;
-      },
+        })),
 
-      upsertPersonBasics: (personId, patch) => {
-        set((state) => ({
-          people: state.people.map((p) =>
-            p.id === personId ? { ...p, ...patch } : p
+      addInteraction: (personId, i0) =>
+        set((s) => ({
+          people: s.people.map((p) =>
+            p.id !== personId
+              ? p
+              : {
+                  ...p,
+                  interactions: [
+                    {
+                      id: uid(),
+                      when: i0.when,
+                      location: i0.location,
+                      notes: i0.notes,
+                      summaryId: i0.summaryId,
+                    },
+                    ...p.interactions,
+                  ],
+                  lastSeen: i0.when ?? p.lastSeen,
+                }
           ),
-        }));
-      },
+        })),
     }),
     { name: "people-store-v1" }
   )
