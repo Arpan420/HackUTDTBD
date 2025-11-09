@@ -142,7 +142,7 @@ def main():
     try:
         # Initialize orchestrator (Riva handles turn detection via is_final)
         orchestrator = ConversationOrchestrator(
-            end_silence_threshold_seconds=2.0
+            end_silence_threshold_seconds=0.5
         )
         
         # Initialize speech handler
